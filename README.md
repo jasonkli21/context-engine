@@ -12,10 +12,11 @@ The project is intentionally **descriptive rather than normative**. It aims to m
 
 ## Status
 
-**Pre-alpha / Phase 0 implemented; independent review findings addressed locally.**
-The synchronous CLI reports files, directories, language and role distributions,
-sizes, physical text lines, a relative tree, and optional Git metadata. Syntax
-parsing, symbols, graphs, persistence, async, MCP, embeddings, and model calls remain
+**Pre-alpha / Phase 1 implemented; independent Phase 1 review pending.**
+The synchronous CLI scans repositories and builds a fresh in-memory Rust/Python
+symbol inventory, with source ranges, syntax diagnostics, deterministic human
+reports and versioned JSON. Phase 0 was accepted by the maintainer on 2026-10-14.
+Graphs, relationships, persistence, async, MCP, embeddings and model calls remain
 future work.
 
 See [`docs/current-state.md`](docs/current-state.md) for implementation and review status.
@@ -32,6 +33,10 @@ cargo build --release
 ./target/release/ctx scan . --format json
 ./target/release/ctx scan . --no-lines
 ./target/release/ctx scan . --max-line-file-size 2097152
+./target/release/ctx index .
+./target/release/ctx symbols . --format json
+./target/release/ctx symbol RepositoryScan .
+./target/release/ctx symbol Router.route /path/to/python-project
 ```
 
 All commands default to the current directory and accept `--format human|json`.
@@ -84,6 +89,42 @@ or probe Git. Help and version: `ctx --help`, `ctx scan --help`, `ctx --version`
 - Scans are local and read-only, with no execution of analyzed code or network calls.
   Results reflect live filesystem state, not an atomic snapshot.
 
+### Syntax and symbol indexing
+
+`index`, `symbols` and `symbol <NAME>` reuse the canonical scanner with line
+counting disabled and optional safe Git metadata. Each command builds a fresh
+in-memory index. Nothing is saved to `.ctx/` or any cache. These commands accept
+`--max-parse-file-size <BYTES>` (default 1 MiB), separately from scan line counting.
+
+- Rust: modules, structs, enums, unions, traits, functions, impl/trait methods,
+  type aliases (including associated types), constants and statics.
+- Python: classes, functions, methods, nested definitions, decorators and async
+  definitions. A function nested inside a method is a function, not another method.
+- Qualified names describe syntax in a single file: `parser::parse`,
+  `Engine::run`, `Router.route`, `outer.inner`. Rust nominal impl targets omit
+  generic arguments; unsupported impl targets contribute no guessed container.
+  File paths do not infer package/module names. Duplicate declarations remain
+  distinct. Names are not stable identities across edits.
+- `symbol` first matches exact case-sensitive qualified names. Only when none
+  match does it try exact local names. Multiple matches and zero matches succeed.
+  There is no substring, fuzzy or semantic search.
+- Every discovered file receives a status: `analyzed`, `unsupported_language`,
+  `skipped_role`, `too_large`, `invalid_utf8`, `read_failed` or `parse_failed`.
+  Supported files in generated/vendor roles are skipped. Other supported roles,
+  including tests, migrations and configuration, are eligible.
+- Source loading validates relative paths, checks every path component for
+  symlinks, requires regular files, bounds reads before and during loading, and
+  requires UTF-8. Files changed/unavailable since discovery fail recoverably.
+  Python encoding-cookie decoding is unsupported. Metadata checks and opening
+  are separate operations: live filesystem races remain possible, and these
+  checks do not provide an atomic snapshot or a platform sandbox.
+- Recoverable syntax errors retain available symbols. Error/missing nodes are
+  counted, with at most 20 detailed syntax diagnostics per file. Query match-limit
+  exhaustion discards that file's symbol results and records a parse failure.
+  Diagnostics contain locations and fixed descriptions, not source bodies.
+- Human symbol locations use one-based lines and byte columns at the symbol name.
+  All repository-controlled human text has control characters escaped.
+
 ### JSON schema v1
 
 All JSON output is wrapped as `{"schema_version":1,"command":"scan","data":{...}}`.
@@ -103,10 +144,29 @@ warnings have a null path.
 output; live filesystem and Git changes can alter results. Fatal errors go to
 stderr with a nonzero exit status.
 
+Phase 1 keeps the same schema-v1 envelope, with commands `index`, `symbols`, and
+`symbol`. Each data object includes `root`, nullable `git`, `summary`, `languages`
+(symbol counts), `kinds` (symbol counts), bounded `diagnostics`, and `scan_warnings`.
+The summary counts discovered/supported/analyzable/analyzed/skipped/failed files,
+syntax-error files, full syntax issues, symbols, and file statuses. `analyzable_files`
+means supported non-generated/non-vendor files before size and read checks.
+
+`index` adds `files` with path, language, role, status and symbol/syntax counts.
+`symbols` adds `symbols`. `symbol` adds `query`, `match_mode` (`qualified_name`,
+`local_name`, `none`) and `matches`. Symbol records contain `name`, `qualified_name`,
+`kind`, lowercase `language`, repository-relative `path`, `range`, and `name_range`.
+Each range contains `start` and `end` points with UTF-8 `byte` offsets, zero-based
+`row`, and zero-based **byte** `column`; the byte interval is half-open `[start,end)`.
+Whole ranges follow declaration nodes (Python includes decorator wrappers;
+Rust preceding attribute siblings are outside the declaration node).
+No source bodies are emitted. Files sort by path; symbols sort by path, start byte,
+end byte, kind name and qualified name; diagnostics sort by path, range, kind and
+message. Non-UTF-8 paths remain lossy and explicitly warned.
+
 ## Future direction
 
-Later phases may add syntax-aware indexing, symbols and relationships, structural
-Git changes, and task-context queries. These capabilities are not implemented.
+Later phases may add symbol relationships, graphs, structural Git changes,
+persistence and task-context queries. These capabilities are not implemented.
 
 ## Why Rust?
 

@@ -1,49 +1,53 @@
 # Current state
 
-**Last updated:** 2026-10-14  
-**Active phase:** Phase 0 — Repository Scanner  
-**Overall status:** implementation and review findings locally verified; independent re-review pending
+**Last updated:** 2026-10-14
+
+**Active phase:** Phase 1 — Syntax and Symbol Index
+
+**Overall status:** implemented and locally verified; independent Phase 1 review pending
 
 ## Delivered
 
-- Synchronous `ctx scan`, `ctx stats`, and `ctx tree`, defaulting to current directory.
-- Root validation, recursive `.gitignore`/`.ignore` traversal, deterministic relative
-  paths, hidden-file inclusion unless ignored, `.git` exclusion, and symlink skipping.
-- Fail-closed checks for symlinked ignore controls; Git dirty probing skips configured
-  external filters; `tree` avoids content reads and Git subprocesses.
-- Centralized language and file-role heuristics; unsupported regular files stay visible.
-- Bounded physical UTF-8 text-line counting (default 1 MiB), recoverable warnings,
-  file/byte/line/coverage totals, language/role distributions and top 10 largest files.
-- Optional Git root, HEAD, branch and dirty metadata; non-Git directories supported.
-- Human reports and explicit schema-v1 JSON; flat tree from shared scan entries.
-- Unit/integration tests, small mixed fixture, public README and application lockfile.
-- Existing repository documentation, context checks and CI scaffold preserved.
+- Phase 0 scanner remains intact: `scan`, `stats`, `tree`, canonical ignore/symlink
+  handling, safe optional Git metadata, bounded line counting and schema-v1 output.
+- Fresh synchronous in-memory `index`, `symbols`, and exact `symbol` lookup.
+- Tree-sitter Rust/Python analyzers with project-owned symbol queries, syntax-local
+  qualification, whole/name byte ranges, and language-neutral domain records.
+- Bounded UTF-8 loading (default 1 MiB), component/symlink/regular-file checks,
+  per-file statuses, recoverable read/encoding/parse failures and syntax recovery.
+- Full error/missing-node counts with at most 20 syntax details per file;
+  explicit query-limit failure, deterministic human and schema-v1 JSON output.
+- Fixtures and regression coverage; public README documents symbol/range semantics.
 
-Delivery evidence: [Phase 0 implementation report](reports/phase-0-implementation-report.md).
+Evidence: [Phase 0 report](reports/phase-0-implementation-report.md),
+[Phase 1 report](reports/phase-1-implementation-report.md).
 
-## Verification
+## Acceptance and verification
 
-- `./scripts/verify.sh`: passed on macOS with stable Rust 1.99.0; context checks,
-  format, Clippy with warnings denied, 7 unit tests and 16 integration tests.
-- `cargo check --all-targets` and `cargo build --release`: passed.
-- Review regression coverage verifies filter suppression, symlinked ignore controls,
-  relative warning paths, tree's reduced work, and human control-character escaping.
-- Toolchain was installed in `/tmp` for local verification; no global setup changed.
-- No local acceptance check remains blocked. Cross-platform CI and independent
-  re-review of the fixes have not been run; this is not a reviewed phase closure.
+- The user explicitly accepted Phase 0 and waived its independent re-review on
+  2026-10-14. Before Phase 1 code changes, `./scripts/verify.sh` passed again:
+  7 unit tests and 16 integration tests. This is user acceptance, not a re-review.
+- Phase 1 canonical verifier, `cargo check --all-targets`, and release build pass
+  on aarch64 macOS with stable Rust 1.99.0 using the existing isolated `/tmp`
+  toolchain. Final suite: 19 unit tests and 22 integration tests, including all
+  16 unchanged Phase 0 integration tests. No global toolchain setup changed.
+- Release human/JSON indexing and listing pass on Context Engine and the Python
+  Context Integrity repository; exact lookup and zero-match behavior smoke-tested.
+- No cloud/provider, cross-platform CI, or independent Phase 1 review is claimed.
 
 ## Known limitations
 
-Classification is heuristic. Unknown text and non-UTF-8 encodings are not line-counted.
-Non-UTF-8 output paths are lossy and warned. Scans reflect live files, not an atomic
-snapshot. Ignore-control preflight adds a metadata traversal and may reject a symlink
-inside an ignored subtree. Git is optional, excludes submodule working contents, and
-has no probe timeout. See README/report for precise ignore, count and path semantics.
+Names are syntax-local, not compiler/package resolved or stable across refactors.
+Only UTF-8 Rust/Python are parsed; generated/vendor source is skipped. Rust nominal
+impl targets omit generics; unsupported targets contribute no guessed qualification.
+Tree-sitter diagnostics describe recovery, not compiler validation. Source is not
+retained or executed. Live filesystem checks leave residual TOCTOU races and do not
+provide an atomic snapshot. Phase 0 heuristic classification, lossy native output
+paths, ignore preflight cost, and optional Git probe limitations still apply.
 
 ## Next step
 
-Independent re-review of the fixes against the plan, architecture and production
-code before closing the phase. Phase 1
-syntax/symbol analysis is the next intended implementation phase; no parsing,
-graphs, persistence, concurrency, async, MCP, model calls or Context Integrity
-policy behavior has been implemented.
+Independent Sol High Phase 1 review against the plan, architecture and production
+path, followed by a separate fix pass if needed. Phase 2 relationships/graphs remain
+future work. No persistence, concurrency, async, MCP, embeddings, model calls or
+Context Integrity policy behavior was introduced.

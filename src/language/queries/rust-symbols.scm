@@ -1,0 +1,11 @@
+(mod_item name: (identifier) @name) @symbol.module
+(struct_item name: (type_identifier) @name) @symbol.struct
+(enum_item name: (type_identifier) @name) @symbol.enum
+(union_item name: (type_identifier) @name) @symbol.union
+(trait_item name: (type_identifier) @name) @symbol.trait
+(function_item name: (identifier) @name) @symbol.function
+(function_signature_item name: (identifier) @name) @symbol.function
+(type_item name: (type_identifier) @name) @symbol.type_alias
+(associated_type name: (type_identifier) @name) @symbol.type_alias
+(const_item name: (identifier) @name) @symbol.constant
+(static_item name: (identifier) @name) @symbol.static

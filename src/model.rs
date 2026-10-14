@@ -154,3 +154,248 @@ mod tests {
         assert_eq!(aggregate(&[]).totals, Counts::default());
     }
 }
+
+pub const DEFAULT_MAX_PARSE_BYTES: u64 = 1024 * 1024;
+pub struct IndexOptions {
+    pub root: PathBuf,
+    pub max_parse_file_bytes: u64,
+    pub probe_git: bool,
+}
+/// UTF-8 byte offsets, zero-based rows and byte columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SourcePoint {
+    pub byte: usize,
+    pub row: usize,
+    pub column: usize,
+}
+/// Half-open byte interval [start, end).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SourceRange {
+    pub start: SourcePoint,
+    pub end: SourcePoint,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolKind {
+    Module,
+    Class,
+    Struct,
+    Enum,
+    Union,
+    Trait,
+    Function,
+    Method,
+    TypeAlias,
+    Constant,
+    Static,
+}
+impl SymbolKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Module => "module",
+            Self::Class => "class",
+            Self::Struct => "struct",
+            Self::Enum => "enum",
+            Self::Union => "union",
+            Self::Trait => "trait",
+            Self::Function => "function",
+            Self::Method => "method",
+            Self::TypeAlias => "type_alias",
+            Self::Constant => "constant",
+            Self::Static => "static",
+        }
+    }
+}
+#[derive(Debug)]
+pub struct Symbol {
+    pub relative_path: PathBuf,
+    pub language: Language,
+    pub kind: SymbolKind,
+    pub name: String,
+    pub qualified_name: String,
+    pub range: SourceRange,
+    pub name_range: SourceRange,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnalysisStatus {
+    Analyzed,
+    UnsupportedLanguage,
+    SkippedRole,
+    TooLarge,
+    InvalidUtf8,
+    ReadFailed,
+    ParseFailed,
+}
+impl AnalysisStatus {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Analyzed => "analyzed",
+            Self::UnsupportedLanguage => "unsupported_language",
+            Self::SkippedRole => "skipped_role",
+            Self::TooLarge => "too_large",
+            Self::InvalidUtf8 => "invalid_utf8",
+            Self::ReadFailed => "read_failed",
+            Self::ParseFailed => "parse_failed",
+        }
+    }
+}
+#[derive(Debug)]
+pub struct FileAnalysis {
+    pub relative_path: PathBuf,
+    pub language: Language,
+    pub role: FileRole,
+    pub status: AnalysisStatus,
+    pub symbol_count: usize,
+    pub syntax_error_count: usize,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticKind {
+    SyntaxError,
+    MissingSyntax,
+    ReadError,
+    InvalidUtf8,
+    ParseFailure,
+}
+impl DiagnosticKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::SyntaxError => "syntax_error",
+            Self::MissingSyntax => "missing_syntax",
+            Self::ReadError => "read_error",
+            Self::InvalidUtf8 => "invalid_utf8",
+            Self::ParseFailure => "parse_failure",
+        }
+    }
+}
+#[derive(Debug)]
+pub struct AnalysisDiagnostic {
+    pub relative_path: PathBuf,
+    pub kind: DiagnosticKind,
+    pub message: String,
+    pub range: Option<SourceRange>,
+}
+pub struct AnalyzedFile {
+    pub symbols: Vec<Symbol>,
+    pub diagnostics: Vec<AnalysisDiagnostic>,
+    pub syntax_error_count: usize,
+}
+pub struct RepositoryIndex {
+    pub root: PathBuf,
+    pub git: Option<GitMetadata>,
+    pub scan_warnings: Vec<ScanWarning>,
+    pub files: Vec<FileAnalysis>,
+    pub symbols: Vec<Symbol>,
+    pub diagnostics: Vec<AnalysisDiagnostic>,
+}
+impl RepositoryIndex {
+    pub fn sort(&mut self) {
+        self.files
+            .sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+        self.symbols.sort_by(|a, b| {
+            a.relative_path
+                .cmp(&b.relative_path)
+                .then(a.range.start.byte.cmp(&b.range.start.byte))
+                .then(a.range.end.byte.cmp(&b.range.end.byte))
+                .then(a.kind.name().cmp(b.kind.name()))
+                .then(a.qualified_name.cmp(&b.qualified_name))
+        });
+        self.diagnostics.sort_by(|a, b| {
+            a.relative_path
+                .cmp(&b.relative_path)
+                .then(a.range.cmp(&b.range))
+                .then(a.kind.name().cmp(b.kind.name()))
+                .then(a.message.cmp(&b.message))
+        });
+        self.scan_warnings
+            .sort_by(|a, b| a.path.cmp(&b.path).then(a.message.cmp(&b.message)));
+    }
+    pub fn lookup(&self, query: &str) -> (&'static str, Vec<&Symbol>) {
+        let qualified: Vec<_> = self
+            .symbols
+            .iter()
+            .filter(|s| s.qualified_name == query)
+            .collect();
+        if !qualified.is_empty() {
+            return ("qualified_name", qualified);
+        }
+        let local: Vec<_> = self.symbols.iter().filter(|s| s.name == query).collect();
+        (
+            if local.is_empty() {
+                "none"
+            } else {
+                "local_name"
+            },
+            local,
+        )
+    }
+}
+
+#[cfg(test)]
+mod index_tests {
+    use super::*;
+    #[test]
+    fn stable_kind_names_and_explicit_sort_ties() {
+        let kinds = [
+            SymbolKind::Module,
+            SymbolKind::Class,
+            SymbolKind::Struct,
+            SymbolKind::Enum,
+            SymbolKind::Union,
+            SymbolKind::Trait,
+            SymbolKind::Function,
+            SymbolKind::Method,
+            SymbolKind::TypeAlias,
+            SymbolKind::Constant,
+            SymbolKind::Static,
+        ];
+        let names: std::collections::BTreeSet<_> = kinds.iter().map(|kind| kind.name()).collect();
+        assert_eq!(names.len(), 11);
+        assert!(names.contains("type_alias"));
+        let range = SourceRange {
+            start: SourcePoint {
+                byte: 0,
+                row: 0,
+                column: 0,
+            },
+            end: SourcePoint {
+                byte: 1,
+                row: 0,
+                column: 1,
+            },
+        };
+        let mut index = RepositoryIndex {
+            root: "/fixture".into(),
+            git: None,
+            scan_warnings: vec![],
+            files: vec![],
+            diagnostics: vec![],
+            symbols: [
+                ("b.rs", SymbolKind::Class, "z"),
+                ("a.rs", SymbolKind::Struct, "a"),
+                ("a.rs", SymbolKind::Function, "z"),
+                ("a.rs", SymbolKind::Function, "a"),
+            ]
+            .into_iter()
+            .map(|(path, kind, name)| Symbol {
+                relative_path: path.into(),
+                language: Language::Rust,
+                kind,
+                name: name.into(),
+                qualified_name: name.into(),
+                range,
+                name_range: range,
+            })
+            .collect(),
+        };
+        index.sort();
+        assert_eq!(
+            index
+                .symbols
+                .iter()
+                .map(|s| s.qualified_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "z", "a", "z"]
+        );
+        assert_eq!(index.symbols[1].kind, SymbolKind::Function);
+        assert_eq!(index.symbols[2].kind, SymbolKind::Struct);
+    }
+}

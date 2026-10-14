@@ -380,3 +380,7 @@ mod tests {
         );
     }
 }
+
+#[path = "output_index.rs"]
+mod index;
+pub use index::{human as index_human, json as index_json};
