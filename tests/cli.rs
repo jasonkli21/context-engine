@@ -66,11 +66,19 @@ fn help_version_and_default_commands() {
     let temp = TempDir::new().unwrap();
     write(temp.path(), "a.rs", b"x\n");
     for command in ["scan", "stats", "tree"] {
-        cargo_bin_cmd!("ctx")
+        let help = cargo_bin_cmd!("ctx")
             .args([command, "--help"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("--format"));
+            .get_output()
+            .stdout
+            .clone();
+        let help = String::from_utf8(help).unwrap();
+        assert!(help.contains("--format"));
+        if command == "tree" {
+            assert!(!help.contains("--no-lines"));
+            assert!(!help.contains("--max-line-file-size"));
+        }
         let output = cargo_bin_cmd!("ctx")
             .current_dir(temp.path())
             .args([command, "--format", "json"])
@@ -227,6 +235,11 @@ fn line_limits_and_recoverable_invalid_text() {
     assert!(files[2]["line_count"].is_null());
     assert_eq!(files[3]["line_count"], 1);
     assert_eq!(v["data"]["warnings"].as_array().unwrap().len(), 1);
+    assert_eq!(v["data"]["warnings"][0]["path"], "invalid.rs");
+    assert_eq!(
+        json(temp.path(), "scan", &["--max-line-file-size", "3"]).1,
+        json(temp.path(), "scan", &["--max-line-file-size", "3"]).1
+    );
     let (v, _) = json(temp.path(), "scan", &["--max-line-file-size", "2"]);
     assert!(v["data"]["files"][1]["line_count"].is_null());
     let (v, _) = json(temp.path(), "scan", &["--no-lines"]);
@@ -329,6 +342,7 @@ fn missing_git_is_optional() {
             .unwrap()
             .contains("Git metadata unavailable")
     );
+    assert!(v["data"]["warnings"][0]["path"].is_null());
 }
 #[cfg(unix)]
 #[test]
@@ -405,6 +419,61 @@ fn nested_ignore_precedence_and_parent_rules() {
 
 #[cfg(unix)]
 #[test]
+fn symlinked_ignore_controls_fail_closed_at_root_and_in_parents() {
+    use std::os::unix::fs::symlink;
+
+    for name in [".gitignore", ".ignore"] {
+        let temp = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        write(outside.path(), "patterns", b"hidden.rs\n");
+        symlink(outside.path().join("patterns"), temp.path().join(name)).unwrap();
+        write(
+            temp.path(),
+            "hidden.rs",
+            b"must not be hidden by outside data\n",
+        );
+
+        let result = cargo_bin_cmd!("ctx")
+            .arg("scan")
+            .arg(temp.path())
+            .args(["--format", "json"])
+            .assert()
+            .failure();
+        let stderr = String::from_utf8_lossy(&result.get_output().stderr);
+        assert!(stderr.contains("symlinked ignore file"), "{stderr}");
+        assert!(stderr.contains(name), "{stderr}");
+        assert!(stderr.contains("scan boundary"), "{stderr}");
+    }
+
+    let parent = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    let scan_root = parent.path().join("sub");
+    fs::create_dir(&scan_root).unwrap();
+    write(outside.path(), "patterns", b"hidden.rs\n");
+    symlink(
+        outside.path().join("patterns"),
+        parent.path().join(".gitignore"),
+    )
+    .unwrap();
+    write(
+        &scan_root,
+        "hidden.rs",
+        b"must not be hidden by outside data\n",
+    );
+
+    let result = cargo_bin_cmd!("ctx")
+        .arg("scan")
+        .arg(&scan_root)
+        .args(["--format", "json"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&result.get_output().stderr);
+    assert!(stderr.contains("symlinked ignore file"), "{stderr}");
+    assert!(stderr.contains(".gitignore"), "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
 fn unreadable_file_and_directory_degrade_to_warnings() {
     use std::os::unix::fs::PermissionsExt;
     let temp = TempDir::new().unwrap();
@@ -422,6 +491,21 @@ fn unreadable_file_and_directory_degrade_to_warnings() {
     .unwrap();
     let permissions_enforced = fs::File::open(temp.path().join("denied.rs")).is_err();
     let (v, _) = json(temp.path(), "scan", &[]);
+    let (tree, _) = json(temp.path(), "tree", &[]);
+    assert!(
+        tree["data"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["path"] == "denied.rs")
+    );
+    assert!(
+        tree["data"]["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|warning| warning["path"] != "denied.rs")
+    );
     // Restore permissions even when running as a privileged user, allowing cleanup.
     fs::set_permissions(
         temp.path().join("denied.rs"),
@@ -436,7 +520,10 @@ fn unreadable_file_and_directory_degrade_to_warnings() {
     if permissions_enforced {
         assert_eq!(v["data"]["files"][0]["path"], "denied.rs");
         assert!(v["data"]["files"][0]["line_count"].is_null());
-        assert_eq!(v["data"]["warnings"].as_array().unwrap().len(), 2);
+        let warnings = v["data"]["warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), 2);
+        assert_eq!(warnings[0]["path"], "closed");
+        assert_eq!(warnings[1]["path"], "denied.rs");
     } else {
         eprintln!(
             "privileged user bypasses filesystem permissions; I/O failure covered by unit test"
@@ -504,4 +591,178 @@ fn git_fsmonitor_in_target_is_not_executed() {
     let (v, _) = json(temp.path(), "scan", &[]);
     assert_eq!(v["data"]["git"]["is_dirty"], true);
     assert!(!temp.path().join("executed-marker").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn git_filter_configuration_skips_dirty_probe_without_running_filter() {
+    if Command::new("git").arg("--version").output().is_err() {
+        return;
+    }
+    let temp = TempDir::new().unwrap();
+    git(temp.path(), &["init", "--initial-branch=main"]);
+    write(temp.path(), ".gitattributes", b"*.txt filter=probe\n");
+    write(temp.path(), "tracked.txt", b"before\n");
+    git(temp.path(), &["add", "."]);
+    git(
+        temp.path(),
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-m",
+            "fixture",
+        ],
+    );
+    let marker = temp.path().join("filter-was-run");
+    let clean = format!("touch '{}'; cat", marker.display());
+    git(temp.path(), &["config", "filter.probe.clean", &clean]);
+    write(temp.path(), "tracked.txt", b"after\n");
+
+    let (value, first) = json(temp.path(), "scan", &[]);
+    let (second_value, second) = json(temp.path(), "scan", &[]);
+    assert_eq!(first, second);
+    assert_eq!(value, second_value);
+    assert!(!marker.exists());
+    assert_eq!(
+        value["data"]["git"]["repository_root"],
+        temp.path().canonicalize().unwrap().to_str().unwrap()
+    );
+    assert_eq!(value["data"]["git"]["branch"], "main");
+    assert!(value["data"]["git"]["head_commit"].is_string());
+    assert!(value["data"]["git"]["is_dirty"].is_null());
+    let warning = value["data"]["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|warning| {
+            warning["message"]
+                == "Git dirty state unavailable because external Git filters are configured"
+        })
+        .expect("filter safety warning");
+    assert!(warning["path"].is_null());
+}
+
+#[cfg(unix)]
+#[test]
+fn git_filter_safety_check_failure_skips_status() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let real_git = Command::new("git").arg("--version").output();
+    if real_git.is_err() {
+        return;
+    }
+    let real_git = std::env::var_os("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join("git"))
+                .find(|git| git.is_file())
+        })
+        .expect("the git executable used by the test");
+    let temp = TempDir::new().unwrap();
+    git(temp.path(), &["init", "--initial-branch=main"]);
+    write(temp.path(), "tracked.rs", b"x\n");
+    git(temp.path(), &["add", "."]);
+    git(
+        temp.path(),
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-m",
+            "fixture",
+        ],
+    );
+
+    let bin = TempDir::new().unwrap();
+    write(
+        bin.path(),
+        "git",
+        b"#!/bin/sh\nfor arg in \"$@\"; do\n  case \"$arg\" in\n    config) echo config-check-failed >&2; exit 2 ;;\n    status) printf x > \"$CTX_GIT_MARKER\"; exit 0 ;;\n  esac\ndone\nexec \"$CTX_REAL_GIT\" \"$@\"\n",
+    );
+    fs::set_permissions(bin.path().join("git"), fs::Permissions::from_mode(0o755)).unwrap();
+    let marker = temp.path().join("status-was-run");
+    let output = cargo_bin_cmd!("ctx")
+        .env("PATH", bin.path())
+        .env("CTX_REAL_GIT", real_git)
+        .env("CTX_GIT_MARKER", &marker)
+        .arg("scan")
+        .arg(temp.path())
+        .args(["--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let value: Value = serde_json::from_slice(&output).unwrap();
+    assert!(!marker.exists());
+    assert_eq!(value["data"]["git"]["branch"], "main");
+    assert!(value["data"]["git"]["is_dirty"].is_null());
+    assert!(value["data"]["warnings"].as_array().unwrap().iter().any(|warning| {
+        warning["message"]
+            == "Git dirty state unavailable because Git filter configuration could not be checked safely"
+            && warning["path"].is_null()
+    }));
+}
+
+#[cfg(unix)]
+#[test]
+fn tree_does_not_read_file_contents_or_invoke_git() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().unwrap();
+    write(temp.path(), "invalid.rs", b"\xff");
+    let bin = TempDir::new().unwrap();
+    write(
+        bin.path(),
+        "git",
+        b"#!/bin/sh\nprintf x > \"$CTX_GIT_MARKER\"\nexit 1\n",
+    );
+    fs::set_permissions(bin.path().join("git"), fs::Permissions::from_mode(0o755)).unwrap();
+    let marker = temp.path().join("tree-ran-git");
+    let output = cargo_bin_cmd!("ctx")
+        .env("PATH", bin.path())
+        .env("CTX_GIT_MARKER", &marker)
+        .arg("tree")
+        .arg(temp.path())
+        .args(["--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let value: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["data"]["entries"][0]["path"], "invalid.rs");
+    assert_eq!(value["data"]["warnings"], serde_json::json!([]));
+    assert!(!marker.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn human_tree_escapes_control_characters_in_repository_filenames() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+    let temp = TempDir::new().unwrap();
+    let name = OsString::from_vec(b"bad\n\x1b.rs".to_vec());
+    fs::write(temp.path().join(name), b"x\n").unwrap();
+    let output = cargo_bin_cmd!("ctx")
+        .arg("tree")
+        .arg(temp.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+    assert!(text.contains("bad\\n\\u{1b}.rs"));
+    assert!(!text.contains('\u{1b}'));
+    assert_eq!(text.lines().filter(|line| line.contains("bad")).count(), 1);
 }

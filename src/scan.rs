@@ -17,6 +17,12 @@ pub enum ScanError {
     Root { path: PathBuf, source: io::Error },
     #[error("scan root {0} is not a directory; provide a directory path")]
     NotDirectory(PathBuf),
+    #[error(
+        "symlinked ignore file {path:?} is unsupported because it could escape the scan boundary; replace it with a regular file"
+    )]
+    SymlinkIgnoreFile { path: PathBuf },
+    #[error("cannot safely inspect ignore-control file {path:?}: {source}")]
+    IgnorePreflight { path: PathBuf, source: io::Error },
     #[error("cannot start traversal of {path}: {source}")]
     Traversal {
         path: PathBuf,
@@ -37,6 +43,7 @@ pub fn scan_repository(options: &ScanOptions) -> Result<RepositoryScan, ScanErro
         path: root.clone(),
         source,
     })?;
+    reject_symlink_ignore_files(&root)?;
     let mut scan = RepositoryScan {
         root: root.clone(),
         files: vec![],
@@ -50,6 +57,7 @@ pub fn scan_repository(options: &ScanOptions) -> Result<RepositoryScan, ScanErro
         .follow_links(false)
         .require_git(false)
         .git_global(false)
+        .git_exclude(false)
         .filter_entry(|entry| entry.depth() == 0 || entry.file_name() != ".git");
     for result in builder.build() {
         let entry = match result {
@@ -59,7 +67,10 @@ pub fn scan_repository(options: &ScanOptions) -> Result<RepositoryScan, ScanErro
                     return Err(ScanError::Traversal { path: root, source });
                 }
                 scan.warnings.push(ScanWarning {
-                    path: None,
+                    path: source
+                        .path_in_error()
+                        .and_then(|path| path.strip_prefix(&root).ok())
+                        .map(Path::to_path_buf),
                     message: format!("traversal: {source}"),
                 });
                 continue;
@@ -139,12 +150,107 @@ pub fn scan_repository(options: &ScanOptions) -> Result<RepositoryScan, ScanErro
     scan.files
         .sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
     scan.directories.sort();
-    let (metadata, warnings) = git::probe(&root);
-    scan.git = metadata;
-    scan.warnings.extend(warnings);
+    if options.probe_git {
+        let (metadata, warnings) = git::probe(&root);
+        scan.git = metadata;
+        scan.warnings.extend(warnings);
+    }
     scan.warnings
         .sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.message.cmp(&b.message)));
     Ok(scan)
+}
+
+trait ErrorPath {
+    fn path_in_error(&self) -> Option<&Path>;
+}
+
+impl ErrorPath for ignore::Error {
+    fn path_in_error(&self) -> Option<&Path> {
+        match self {
+            ignore::Error::Partial(errors) => errors.iter().find_map(ErrorPath::path_in_error),
+            ignore::Error::WithLineNumber { err, .. } | ignore::Error::WithDepth { err, .. } => {
+                err.path_in_error()
+            }
+            ignore::Error::WithPath { path, .. } => Some(path),
+            ignore::Error::Loop { child, .. } => Some(child),
+            ignore::Error::Io(_)
+            | ignore::Error::Glob { .. }
+            | ignore::Error::UnrecognizedFileType(_)
+            | ignore::Error::InvalidDefinition => None,
+        }
+    }
+}
+
+fn reject_symlink_ignore_files(root: &Path) -> Result<(), ScanError> {
+    fn check_candidate(directory: &Path) -> Result<(), ScanError> {
+        for name in [".gitignore", ".ignore"] {
+            let path = directory.join(name);
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(ScanError::SymlinkIgnoreFile { path });
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(ScanError::IgnorePreflight { path, source });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // WalkBuilder can read parent ignore files, so validate those candidates too.
+    for directory in root.ancestors() {
+        if !directory
+            .components()
+            .any(|component| component.as_os_str() == ".git")
+        {
+            check_candidate(directory)?;
+        }
+    }
+
+    // Traverse without ignore processing so no ignore control file is opened before
+    // its file type is checked. Symlinked directories are never followed.
+    let mut builder = WalkBuilder::new(root);
+    builder
+        .hidden(false)
+        .follow_links(false)
+        .require_git(false)
+        .ignore(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .parents(false)
+        .filter_entry(|entry| entry.depth() == 0 || entry.file_name() != ".git");
+    for result in builder.build() {
+        let entry = match result {
+            Ok(entry) => entry,
+            // The regular traversal reports recoverable child failures. A directory
+            // that cannot be entered cannot expose an ignore control file to either
+            // traversal, so it is safe to defer its diagnostic.
+            Err(error) if error.depth() != Some(0) => continue,
+            Err(source) => {
+                return Err(ScanError::Traversal {
+                    path: root.to_path_buf(),
+                    source,
+                });
+            }
+        };
+        if entry.depth() == 0 {
+            continue;
+        }
+        let Some(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink()
+            && matches!(entry.file_name().to_str(), Some(".gitignore" | ".ignore"))
+        {
+            return Err(ScanError::SymlinkIgnoreFile {
+                path: entry.path().to_path_buf(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn count_lines(path: &Path, max_bytes: u64) -> io::Result<u64> {

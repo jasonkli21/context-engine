@@ -169,6 +169,7 @@ pub struct ScanOptions {
     pub root: PathBuf,
     pub count_lines: bool,
     pub max_line_count_file_bytes: u64,
+    pub probe_git: bool,
 }
 
 pub struct RepositoryScan {
@@ -253,7 +254,9 @@ Rules:
 3. the **scan root** remains what the user requested and need not equal the Git root;
 4. emitted file/tree paths are relative to the scan root;
 5. traversal must not escape above the scan root;
-6. directory symlinks are not followed by default.
+6. file and directory symlinks are not followed by default;
+7. schema-v1 warning paths, when present, are scan-root-relative entry identities
+   normalized with `/`; repository-wide warnings have no path.
 
 Example:
 
@@ -275,7 +278,11 @@ Expected default behavior:
 
 - respect `.gitignore` and `.ignore` through the traversal backend;
 - exclude `.git/`;
-- do not follow directory symlinks;
+- do not follow file or directory symlinks;
+- fail closed if a `.gitignore` or `.ignore` candidate in the scan tree or a
+  consulted parent directory is a symlink; preflight checks metadata without
+  following directory links before the ignore-aware walk;
+- do not consult global Git ignores or `.git/info/exclude`;
 - retain unsupported/unknown files as visible records rather than silently discarding them;
 - treat unreadable individual files as warnings where practical, not whole-scan failures.
 
@@ -466,7 +473,8 @@ Phase 0 is read-only. It may:
 - list files/directories;
 - read file metadata;
 - read text for line counting;
-- run read-only Git metadata commands.
+- run read-only Git metadata commands; dirty status is skipped when executable
+  clean/process filters are configured or filter configuration cannot be checked.
 
 It must not:
 

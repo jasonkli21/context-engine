@@ -6,6 +6,7 @@ pub struct ScanOptions {
     pub root: PathBuf,
     pub count_lines: bool,
     pub max_line_count_file_bytes: u64,
+    pub probe_git: bool,
 }
 #[derive(Debug)]
 pub struct RepositoryScan {

@@ -12,10 +12,11 @@ The project is intentionally **descriptive rather than normative**. It aims to m
 
 ## Status
 
-**Pre-alpha / Phase 0 implemented; independent review pending.** The synchronous CLI
-reports files, directories, language and role distributions, sizes, physical text
-lines, a relative tree, and optional Git metadata. Syntax parsing, symbols, graphs,
-persistence, async, MCP, embeddings, and model calls remain future work.
+**Pre-alpha / Phase 0 implemented; independent review findings addressed locally.**
+The synchronous CLI reports files, directories, language and role distributions,
+sizes, physical text lines, a relative tree, and optional Git metadata. Syntax
+parsing, symbols, graphs, persistence, async, MCP, embeddings, and model calls remain
+future work.
 
 See [`docs/current-state.md`](docs/current-state.md) for implementation and review status.
 
@@ -33,22 +34,25 @@ cargo build --release
 ./target/release/ctx scan . --max-line-file-size 2097152
 ```
 
-All commands default to the current directory, accept `--format human|json`,
-`--no-lines`, and `--max-line-file-size <bytes>` (default 1 MiB). Every command
-performs a fresh scan. `scan` shows an overview; `stats` adds per-language byte
-and line totals; `tree` lists alphabetically ordered relative paths, with `/`
-suffixes for directories. Help and version: `ctx --help`, `ctx scan --help`,
-`ctx --version`.
+All commands default to the current directory and accept `--format human|json`.
+`scan` and `stats` also accept `--no-lines` and `--max-line-file-size <bytes>`
+(default 1 MiB). Every command performs a fresh scan. `scan` shows an overview;
+`stats` adds per-language byte and line totals; `tree` lists alphabetically ordered
+relative paths, with `/` suffixes for directories. Tree does not read file contents
+or probe Git. Help and version: `ctx --help`, `ctx scan --help`, `ctx --version`.
 
 ### Scan semantics
 
 - The requested root is canonicalized and must be a readable directory. It may
   differ from the enclosing Git root; non-Git directories are valid targets.
-- `.ignore`, `.gitignore` (also outside Git), parent ignore files, and Git's local
-  `info/exclude` rules use the `ignore` crate's precedence. Global Git ignores are
-  disabled so unrelated user configuration does not change the inventory.
+- `.ignore`, `.gitignore` (also outside Git), and parent ignore files use the
+  `ignore` crate's precedence. Global Git ignores and Git's local `info/exclude`
+  are disabled so unrelated configuration does not change the inventory.
 - Hidden files are included unless ignored. `.git` entries are always excluded.
   Symlinks (both files and directories) and special filesystem entries are skipped.
+  A symlinked `.gitignore` or `.ignore` in the scan tree or a consulted parent path
+  fails the scan before ignore-aware traversal. A no-follow metadata preflight checks
+  the tree, including ignored directories, and adds one traversal's metadata cost.
   Unknown regular files remain visible and contribute to file/byte totals.
 - Directory count includes discovered, non-ignored descendant directories,
   including empty directories; it excludes the scan root. An unreadable discovered
@@ -68,10 +72,15 @@ suffixes for directories. Help and version: `ctx --help`, `ctx scan --help`,
 - Git reports enclosing root, HEAD, branch, and dirty state when available. Unborn
   HEAD and detached branch are absent values. Git failure becomes a warning.
   Dirty status covers the enclosing repository; submodule working contents are
-  not inspected. Git probing disables filesystem-monitor commands and optional locks.
+  not inspected. Dirty probing is skipped with a warning if executable Git clean or
+  process filters are configured, or if that configuration cannot be checked safely.
+  Git probing disables filesystem-monitor commands and optional locks.
 - Paths remain native internally. Output uses lossy Unicode at the presentation
   boundary (relative paths use `/`); non-UTF-8 paths trigger a warning because
-  replacement characters may make displayed names ambiguous.
+  replacement characters may make displayed names ambiguous. Human output escapes
+  control characters from paths and warning messages. In JSON schema v1, warning
+  paths identify scan-root-relative entries with `/`; repository-wide warnings use
+  `null`.
 - Scans are local and read-only, with no execution of analyzed code or network calls.
   Results reflect live filesystem state, not an atomic snapshot.
 
@@ -84,7 +93,9 @@ All JSON output is wrapped as `{"schema_version":1,"command":"scan","data":{...}
 and nullable `line_count`. Counts contain `files`, `bytes`, `counted_lines`, and
 `files_with_line_counts`. Git is nullable; its fields are `repository_root`,
 `head_commit`, `branch`, and `is_dirty` (the latter three nullable).
-Warnings contain nullable `path` and `message`.
+Warnings contain nullable `path` and `message`. A non-null warning path is the
+scan-root-relative identity of an entry, normalized with `/`; repository-wide Git
+warnings have a null path.
 
 `tree` data contain `root`, a flat sorted `entries` list (`path`, `kind` of
 `file` or `directory`), and `warnings`. Relative file/tree paths are rooted in

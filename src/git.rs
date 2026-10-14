@@ -26,9 +26,9 @@ fn run(root: &Path, args: &[&str]) -> std::io::Result<Output> {
     }
     command.output()
 }
-fn warning(root: &Path, message: String) -> ScanWarning {
+fn warning(message: String) -> ScanWarning {
     ScanWarning {
-        path: Some(root.to_path_buf()),
+        path: None,
         message,
     }
 }
@@ -63,10 +63,10 @@ fn optional_text(root: &Path, args: &[&str], warnings: &mut Vec<ScanWarning>) ->
                 Ok(value) if !value.is_empty() => Some(value),
                 Ok(_) => None,
                 Err(_) => {
-                    warnings.push(warning(
-                        root,
-                        format!("Git {} returned non-UTF-8 metadata", args.join(" ")),
-                    ));
+                    warnings.push(warning(format!(
+                        "Git {} returned non-UTF-8 metadata",
+                        args.join(" ")
+                    )));
                     None
                 }
             }
@@ -74,41 +74,62 @@ fn optional_text(root: &Path, args: &[&str], warnings: &mut Vec<ScanWarning>) ->
         // --quiet uses exit 1 for an unborn or detached HEAD.
         Ok(output) if output.status.code() == Some(1) && output.stderr.is_empty() => None,
         Ok(output) => {
-            warnings.push(warning(
-                root,
-                format!("Git {} failed: {}", args.join(" "), detail(&output)),
-            ));
+            warnings.push(warning(format!(
+                "Git {} failed: {}",
+                args.join(" "),
+                detail(&output)
+            )));
             None
         }
         Err(error) => {
-            warnings.push(warning(
-                root,
-                format!("Git {} unavailable: {error}", args.join(" ")),
-            ));
+            warnings.push(warning(format!(
+                "Git {} unavailable: {error}",
+                args.join(" ")
+            )));
             None
         }
     }
 }
+
+fn filters_configured(root: &Path) -> Result<bool, ()> {
+    let output = run(
+        root,
+        &[
+            "config",
+            "--null",
+            "--get-regexp",
+            r"^filter\..*\.(clean|process)$",
+        ],
+    )
+    .map_err(|_| ())?;
+    if output.status.success() {
+        return Ok(!output.stdout.is_empty());
+    }
+    if output.status.code() == Some(1) && output.stderr.is_empty() {
+        return Ok(false);
+    }
+    Err(())
+}
+
 pub fn probe(root: &Path) -> (Option<GitMetadata>, Vec<ScanWarning>) {
     let mut warnings = vec![];
     let output = match run(root, &["rev-parse", "--show-toplevel"]) {
         Ok(output) if output.status.success() => output,
         Ok(output) if detail(&output).contains("not a git repository") => return (None, warnings),
         Ok(output) => {
-            warnings.push(warning(
-                root,
-                format!("Git root probe failed: {}", detail(&output)),
-            ));
+            warnings.push(warning(format!(
+                "Git root probe failed: {}",
+                detail(&output)
+            )));
             return (None, warnings);
         }
         Err(error) => {
-            warnings.push(warning(root, format!("Git metadata unavailable: {error}")));
+            warnings.push(warning(format!("Git metadata unavailable: {error}")));
             return (None, warnings);
         }
     };
     let Some(repository_root) = path_from_output(output.stdout) else {
         warnings.push(warning(
-            root,
             "Git root is not representable on this platform".into(),
         ));
         return (None, warnings);
@@ -123,27 +144,38 @@ pub fn probe(root: &Path) -> (Option<GitMetadata>, Vec<ScanWarning>) {
         &["symbolic-ref", "--quiet", "--short", "HEAD"],
         &mut warnings,
     );
-    let is_dirty = match run(
-        root,
-        &[
-            "status",
-            "--porcelain=v1",
-            "--untracked-files=normal",
-            "--ignore-submodules=all",
-        ],
-    ) {
-        Ok(output) if output.status.success() => Some(!output.stdout.is_empty()),
-        Ok(output) => {
+    let is_dirty = match filters_configured(root) {
+        Ok(true) => {
             warnings.push(warning(
-                root,
-                format!("Git status failed: {}", detail(&output)),
+                "Git dirty state unavailable because external Git filters are configured".into(),
             ));
             None
         }
-        Err(error) => {
-            warnings.push(warning(root, format!("Git status unavailable: {error}")));
+        Err(()) => {
+            warnings.push(warning(
+                "Git dirty state unavailable because Git filter configuration could not be checked safely".into(),
+            ));
             None
         }
+        Ok(false) => match run(
+            root,
+            &[
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=normal",
+                "--ignore-submodules=all",
+            ],
+        ) {
+            Ok(output) if output.status.success() => Some(!output.stdout.is_empty()),
+            Ok(output) => {
+                warnings.push(warning(format!("Git status failed: {}", detail(&output))));
+                None
+            }
+            Err(error) => {
+                warnings.push(warning(format!("Git status unavailable: {error}")));
+                None
+            }
+        },
     };
     (
         Some(GitMetadata {

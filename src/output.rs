@@ -2,6 +2,23 @@ use crate::model::{Counts, FileRecord, GitMetadata, RepositoryScan, Statistics, 
 use serde::Serialize;
 use std::path::Path;
 
+pub fn escape_controls(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            character if character.is_control() => {
+                use std::fmt::Write;
+                let _ = write!(escaped, "\\u{{{:x}}}", character as u32);
+            }
+            character => escaped.push(character),
+        }
+    }
+    escaped
+}
+
 // Only these DTOs define schema v1; domain types deliberately do not derive Serialize.
 #[derive(Serialize)]
 struct Envelope<T> {
@@ -112,7 +129,14 @@ fn warnings(scan: &RepositoryScan) -> Vec<WarningDto> {
         .warnings
         .iter()
         .map(|w| WarningDto {
-            path: w.path.as_deref().map(|p| p.to_string_lossy().into_owned()),
+            path: w.path.as_deref().and_then(|path| {
+                let relative_path = if path.is_absolute() {
+                    path.strip_prefix(&scan.root).ok()?
+                } else {
+                    path
+                };
+                Some(relative(relative_path))
+            }),
             message: w.message.clone(),
         })
         .collect();
@@ -125,7 +149,13 @@ fn warnings(scan: &RepositoryScan) -> Vec<WarningDto> {
         || scan
             .git
             .as_ref()
-            .is_some_and(|g| g.repository_root.to_str().is_none());
+            .is_some_and(|g| g.repository_root.to_str().is_none())
+        || scan.warnings.iter().any(|warning| {
+            warning
+                .path
+                .as_deref()
+                .is_some_and(|path| path.to_str().is_none())
+        });
     if has_lossy_path {
         warnings.push(WarningDto { path: None, message: "some paths contain non-UTF-8 bytes; displayed paths use replacement characters and may not be unique".into() });
     }
@@ -225,21 +255,24 @@ fn table(stats: &Statistics<'_>, detailed: bool) -> String {
     for file in &stats.largest_files {
         text.push_str(&format!(
             "  {}  {} bytes\n",
-            relative(&file.relative_path),
+            escape_controls(&relative(&file.relative_path)),
             file.size_bytes
         ));
     }
     text
 }
 pub fn human(command: &str, scan: &RepositoryScan) -> String {
-    let mut text = format!("Repository: {}\n", scan.root.display());
+    let mut text = format!(
+        "Repository: {}\n",
+        escape_controls(&scan.root.to_string_lossy())
+    );
     if command == "tree" {
         text.push_str("\nTree\n.\n");
         // A flat relative-path tree also avoids ambiguous indentation for deep paths.
         for entry in entries(scan) {
             text.push_str(&format!(
                 "{}{}\n",
-                entry.path,
+                escape_controls(&entry.path),
                 if entry.kind == "directory" { "/" } else { "" }
             ));
         }
@@ -251,13 +284,17 @@ pub fn human(command: &str, scan: &RepositoryScan) -> String {
         if let Some(git) = &scan.git {
             text.push_str(&format!(
                 "  Root: {}\n  Branch: {}\n  Head: {}\n  Dirty: {}\n",
-                git.repository_root.display(),
-                git.branch
-                    .as_deref()
-                    .unwrap_or("unavailable (possibly detached)"),
-                git.head_commit
-                    .as_deref()
-                    .unwrap_or("unavailable (possibly unborn)"),
+                escape_controls(&git.repository_root.to_string_lossy()),
+                escape_controls(
+                    git.branch
+                        .as_deref()
+                        .unwrap_or("unavailable (possibly detached)")
+                ),
+                escape_controls(
+                    git.head_commit
+                        .as_deref()
+                        .unwrap_or("unavailable (possibly unborn)")
+                ),
                 match git.is_dirty {
                     Some(true) => "yes",
                     Some(false) => "no",
@@ -274,8 +311,11 @@ pub fn human(command: &str, scan: &RepositoryScan) -> String {
         for warning in warnings {
             text.push_str(&format!(
                 "  {}{}\n",
-                warning.path.map(|p| format!("{p}: ")).unwrap_or_default(),
-                warning.message
+                warning
+                    .path
+                    .map(|path| format!("{}: ", escape_controls(&path)))
+                    .unwrap_or_default(),
+                escape_controls(&warning.message)
             ));
         }
     }
@@ -285,6 +325,34 @@ pub fn human(command: &str, scan: &RepositoryScan) -> String {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn human_output_escapes_control_characters_and_warning_paths_are_relative() {
+        let scan = RepositoryScan {
+            root: "/fixture".into(),
+            files: vec![],
+            directories: vec![],
+            git: None,
+            warnings: vec![crate::model::ScanWarning {
+                path: Some(Path::new("nested").join("bad\n.rs")),
+                message: "read failed\n\u{1b}[31mred\u{1b}[0m".into(),
+            }],
+        };
+        let human = human("scan", &scan);
+        assert!(human.contains("nested/bad\\n.rs: read failed\\n\\u{1b}[31mred\\u{1b}[0m"));
+        assert!(!human.contains('\u{1b}'));
+
+        let json: serde_json::Value = serde_json::from_str(&json("scan", &scan).unwrap()).unwrap();
+        assert_eq!(json["data"]["warnings"][0]["path"], "nested/bad\n.rs");
+        assert!(
+            json["data"]["warnings"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains('\u{1b}')
+        );
+        assert_eq!(escape_controls("a\r\tb\u{7f}é"), "a\\r\\tb\\u{7f}é");
+    }
+
     #[test]
     fn non_utf8_paths_are_qualified_at_presentation_boundary() {
         use std::{ffi::OsString, os::unix::ffi::OsStringExt};

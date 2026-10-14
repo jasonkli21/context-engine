@@ -22,7 +22,7 @@ pub enum Command {
     /// Show repository statistics.
     Stats(PathArgs),
     /// Show the repository tree.
-    Tree(PathArgs),
+    Tree(TreeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -39,6 +39,16 @@ pub struct PathArgs {
     /// Maximum bytes per file eligible for line counting.
     #[arg(long, default_value_t = DEFAULT_MAX_LINE_BYTES)]
     pub max_line_file_size: u64,
+}
+
+#[derive(Debug, Args)]
+pub struct TreeArgs {
+    /// Repository or directory to inspect.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+    /// Output format (JSON schema version 1).
+    #[arg(long, value_enum, default_value = "human")]
+    pub format: Format,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
