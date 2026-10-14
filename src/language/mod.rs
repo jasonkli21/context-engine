@@ -12,8 +12,89 @@ use std::path::Path;
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
 
 #[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct AnalysisError(pub String);
+pub enum AnalysisError {
+    #[error("{0}")]
+    Failure(String),
+    #[error("per-file symbol analysis limit exceeded")]
+    LimitExceeded,
+}
+
+#[derive(Clone, Copy)]
+struct AnalysisLimits {
+    max_symbols: usize,
+    max_name_bytes: usize,
+    max_qualification_nodes: usize,
+}
+
+const ANALYSIS_LIMITS: AnalysisLimits = AnalysisLimits {
+    max_symbols: 4_096,
+    max_name_bytes: 4 * 1024 * 1024,
+    max_qualification_nodes: 25_000,
+};
+
+struct AnalysisBudget {
+    limits: AnalysisLimits,
+    symbols: usize,
+    name_bytes: usize,
+    qualification_nodes: usize,
+}
+
+type QualifyFn = fn(
+    Node<'_>,
+    &str,
+    SymbolKind,
+    &mut AnalysisBudget,
+) -> Result<(SymbolKind, String, SourceRange), AnalysisError>;
+
+impl AnalysisBudget {
+    fn new(limits: AnalysisLimits) -> Self {
+        Self {
+            limits,
+            symbols: 0,
+            name_bytes: 0,
+            qualification_nodes: 0,
+        }
+    }
+
+    fn reserve_symbol(&mut self) -> Result<(), AnalysisError> {
+        if self.symbols >= self.limits.max_symbols {
+            return Err(AnalysisError::LimitExceeded);
+        }
+        self.symbols += 1;
+        Ok(())
+    }
+
+    fn charge_name_bytes(&mut self, bytes: usize) -> Result<(), AnalysisError> {
+        if bytes > self.limits.max_name_bytes.saturating_sub(self.name_bytes) {
+            return Err(AnalysisError::LimitExceeded);
+        }
+        self.name_bytes += bytes;
+        Ok(())
+    }
+
+    fn charge_joined_name(&mut self, parts: &[&str], separator: &str) -> Result<(), AnalysisError> {
+        let mut bytes = parts
+            .len()
+            .saturating_sub(1)
+            .checked_mul(separator.len())
+            .ok_or(AnalysisError::LimitExceeded)?;
+        for part in parts {
+            bytes = bytes
+                .checked_add(part.len())
+                .ok_or(AnalysisError::LimitExceeded)?;
+        }
+        self.charge_name_bytes(bytes)
+    }
+
+    fn visit_qualification_node(&mut self) -> Result<(), AnalysisError> {
+        if self.qualification_nodes >= self.limits.max_qualification_nodes {
+            return Err(AnalysisError::LimitExceeded);
+        }
+        self.qualification_nodes += 1;
+        Ok(())
+    }
+}
+
 pub trait LanguageAnalyzer {
     fn language(&self) -> Language;
     fn analyze(&mut self, path: &Path, text: &str) -> Result<AnalyzedFile, AnalysisError>;
@@ -46,9 +127,9 @@ impl SyntaxAnalyzer {
         let mut parser = Parser::new();
         parser
             .set_language(&language)
-            .map_err(|e| AnalysisError(format!("parser initialization: {e}")))?;
+            .map_err(|e| AnalysisError::Failure(format!("parser initialization: {e}")))?;
         let query = Query::new(&language, query)
-            .map_err(|e| AnalysisError(format!("embedded symbol query: {e}")))?;
+            .map_err(|e| AnalysisError::Failure(format!("embedded symbol query: {e}")))?;
         Ok(Self { parser, query })
     }
     fn analyze(
@@ -56,12 +137,23 @@ impl SyntaxAnalyzer {
         language: Language,
         path: &Path,
         text: &str,
-        qualify: fn(Node<'_>, &str, SymbolKind) -> (SymbolKind, String, SourceRange),
+        qualify: QualifyFn,
+    ) -> Result<AnalyzedFile, AnalysisError> {
+        self.analyze_with_limits(language, path, text, qualify, ANALYSIS_LIMITS)
+    }
+
+    fn analyze_with_limits(
+        &mut self,
+        language: Language,
+        path: &Path,
+        text: &str,
+        qualify: QualifyFn,
+        limits: AnalysisLimits,
     ) -> Result<AnalyzedFile, AnalysisError> {
         let tree = self
             .parser
             .parse(text, None)
-            .ok_or_else(|| AnalysisError("parser returned no tree".into()))?;
+            .ok_or_else(|| AnalysisError::Failure("parser returned no tree".into()))?;
         let mut result = AnalyzedFile {
             symbols: vec![],
             diagnostics: vec![],
@@ -70,6 +162,7 @@ impl SyntaxAnalyzer {
         let mut cursor = QueryCursor::new();
         cursor.set_match_limit(65_536);
         let mut matches = cursor.matches(&self.query, tree.root_node(), text.as_bytes());
+        let mut budget = AnalysisBudget::new(limits);
         while let Some(m) = matches.next() {
             let mut declaration = None;
             let mut name = None;
@@ -77,21 +170,28 @@ impl SyntaxAnalyzer {
                 let label = self.query.capture_names()[capture.index as usize];
                 if label == "name" {
                     if name.replace(capture.node).is_some() {
-                        return Err(AnalysisError("duplicate name capture".into()));
+                        return Err(AnalysisError::Failure("duplicate name capture".into()));
                     }
                 } else if let Some(kind) = capture_kind(label) {
                     if declaration.replace((capture.node, kind)).is_some() {
-                        return Err(AnalysisError("duplicate declaration capture".into()));
+                        return Err(AnalysisError::Failure(
+                            "duplicate declaration capture".into(),
+                        ));
                     }
                 } else {
-                    return Err(AnalysisError("unknown embedded query capture".into()));
+                    return Err(AnalysisError::Failure(
+                        "unknown embedded query capture".into(),
+                    ));
                 }
             }
-            let (node, kind) =
-                declaration.ok_or_else(|| AnalysisError("missing declaration capture".into()))?;
-            let name = name.ok_or_else(|| AnalysisError("missing name capture".into()))?;
-            let local = node_text(name, text).to_owned();
-            let (kind, qualified_name, range) = qualify(node, text, kind);
+            let (node, kind) = declaration
+                .ok_or_else(|| AnalysisError::Failure("missing declaration capture".into()))?;
+            let name = name.ok_or_else(|| AnalysisError::Failure("missing name capture".into()))?;
+            budget.reserve_symbol()?;
+            let local_name = node_text(name, text);
+            budget.charge_name_bytes(local_name.len())?;
+            let local = local_name.to_owned();
+            let (kind, qualified_name, range) = qualify(node, text, kind, &mut budget)?;
             result.symbols.push(Symbol {
                 relative_path: path.into(),
                 language: language.clone(),
@@ -103,7 +203,7 @@ impl SyntaxAnalyzer {
             });
         }
         if cursor.did_exceed_match_limit() {
-            return Err(AnalysisError(
+            return Err(AnalysisError::Failure(
                 "symbol query match limit exceeded; results discarded".into(),
             ));
         }

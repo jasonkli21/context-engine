@@ -102,26 +102,33 @@ in-memory index. Nothing is saved to `.ctx/` or any cache. These commands accept
   definitions. A function nested inside a method is a function, not another method.
 - Qualified names describe syntax in a single file: `parser::parse`,
   `Engine::run`, `Router.route`, `outer.inner`. Rust nominal impl targets omit
-  generic arguments; unsupported impl targets contribute no guessed container.
+  generic arguments; reference/pointer and other unsupported impl targets
+  contribute no guessed container.
   File paths do not infer package/module names. Duplicate declarations remain
   distinct. Names are not stable identities across edits.
 - `symbol` first matches exact case-sensitive qualified names. Only when none
   match does it try exact local names. Multiple matches and zero matches succeed.
   There is no substring, fuzzy or semantic search.
 - Every discovered file receives a status: `analyzed`, `unsupported_language`,
-  `skipped_role`, `too_large`, `invalid_utf8`, `read_failed` or `parse_failed`.
+  `skipped_role`, `too_large`, `invalid_utf8`, `read_failed`, `parse_failed` or
+  `analysis_limit_exceeded`.
   Supported files in generated/vendor roles are skipped. Other supported roles,
   including tests, migrations and configuration, are eligible.
 - Source loading validates relative paths, checks every path component for
   symlinks, requires regular files, bounds reads before and during loading, and
-  requires UTF-8. Files changed/unavailable since discovery fail recoverably.
-  Python encoding-cookie decoding is unsupported. Metadata checks and opening
-  are separate operations: live filesystem races remain possible, and these
-  checks do not provide an atomic snapshot or a platform sandbox.
+  requires UTF-8. Files observed as unavailable, symlinks/non-regular, or oversized
+  while loading fail recoverably. Ordinary concurrent content changes may still
+  be analyzed because scan, metadata checks and opening are not an atomic snapshot.
+  Python encoding-cookie decoding is unsupported; these checks do not provide a
+  platform sandbox.
 - Recoverable syntax errors retain available symbols. Error/missing nodes are
-  counted, with at most 20 detailed syntax diagnostics per file. Query match-limit
-  exhaustion discards that file's symbol results and records a parse failure.
-  Diagnostics contain locations and fixed descriptions, not source bodies.
+  counted, with at most 20 detailed syntax diagnostics per file. Tree-sitter's
+  in-progress query-state limit remains a separate guard; exhaustion discards
+  that file's symbols and records `parse_failed`. Project-owned per-file limits
+  cap analysis at 4,096 symbols, 4 MiB of local/qualified name materialization,
+  and 25,000 qualification-node visits. Exceeding a limit discards all symbols
+  from that file and records `analysis_limit_exceeded`. Diagnostics contain
+  locations and fixed descriptions, not source bodies.
 - Human symbol locations use one-based lines and byte columns at the symbol name.
   All repository-controlled human text has control characters escaped.
 

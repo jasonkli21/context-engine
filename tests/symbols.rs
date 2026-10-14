@@ -94,6 +94,56 @@ fn mixed_index_statuses_counts_and_determinism() {
             predicate::str::contains("Discovered: 10").and(predicate::str::contains("By kind")),
         );
 }
+
+#[test]
+fn per_file_analysis_budgets_fail_closed_and_are_deterministic() {
+    let dir = TempDir::new().unwrap();
+    // The production per-file symbol ceiling is 4,096.
+    write(
+        dir.path(),
+        "flat.rs",
+        "fn f() {}\n".repeat(4_097).as_bytes(),
+    );
+
+    let mut deep = String::new();
+    for _ in 0..160 {
+        deep.push_str("mod m {\n");
+    }
+    deep.push_str("fn leaf() {}\n");
+    for _ in 0..160 {
+        deep.push_str("}\n");
+    }
+    write(dir.path(), "deep.rs", deep.as_bytes());
+
+    let (value, bytes) = run(dir.path(), "index", None, &[]);
+    assert_eq!(bytes, run(dir.path(), "index", None, &[]).1);
+    let data = &value["data"];
+    assert_eq!(data["summary"]["symbols"], 0);
+    assert_eq!(data["summary"]["failed_files"], 2);
+    assert_eq!(data["summary"]["statuses"]["analysis_limit_exceeded"], 2);
+    assert_eq!(
+        data["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|file| (
+                file["status"].as_str().unwrap(),
+                file["symbol_count"].as_u64().unwrap()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("analysis_limit_exceeded", 0),
+            ("analysis_limit_exceeded", 0)
+        ]
+    );
+    let diagnostics = data["diagnostics"].as_array().unwrap();
+    assert_eq!(diagnostics.len(), 2);
+    assert!(diagnostics.iter().all(|diagnostic| {
+        diagnostic["kind"] == "analysis_limit_exceeded"
+            && diagnostic["message"] == "per-file symbol analysis limit exceeded"
+            && diagnostic["range"].is_null()
+    }));
+}
 #[test]
 fn lookup_modes_multiple_matches_ranges_and_no_fuzzy_search() {
     let dir = TempDir::new().unwrap();

@@ -17,18 +17,28 @@ impl LanguageAnalyzer for RustAnalyzer {
     }
 }
 // Nominal impl targets omit generic arguments, which may contain arbitrary expressions.
-// Unsupported targets supply no guessed container name.
-fn impl_target(mut node: Node<'_>, text: &str) -> Option<String> {
+// Reference/pointer targets and other unsupported forms supply no guessed container.
+fn impl_target<'src>(
+    mut node: Node<'_>,
+    text: &'src str,
+    budget: &mut AnalysisBudget,
+) -> Result<Option<Vec<&'src str>>, AnalysisError> {
     let mut parts = vec![];
     loop {
+        budget.visit_qualification_node()?;
         match node.kind() {
-            "generic_type" | "reference_type" | "pointer_type" => {
-                node = node.child_by_field_name("type")?;
+            "generic_type" => {
+                let Some(target) = node.child_by_field_name("type") else {
+                    return Ok(None);
+                };
+                node = target;
             }
             "scoped_type_identifier" | "scoped_identifier" => {
-                let name = node.child_by_field_name("name")?;
+                let Some(name) = node.child_by_field_name("name") else {
+                    return Ok(None);
+                };
                 if !matches!(name.kind(), "type_identifier" | "identifier") {
-                    return None;
+                    return Ok(None);
                 }
                 parts.push(node_text(name, text));
                 if let Some(path) = node.child_by_field_name("path") {
@@ -41,17 +51,21 @@ fn impl_target(mut node: Node<'_>, text: &str) -> Option<String> {
                 parts.push(node_text(node, text));
                 break;
             }
-            _ => return None,
+            _ => return Ok(None),
         }
     }
-    parts.reverse();
-    Some(parts.join("::"))
+    Ok(Some(parts))
 }
 
-fn qualify(node: Node<'_>, text: &str, mut kind: SymbolKind) -> (SymbolKind, String, SourceRange) {
+pub(super) fn qualify(
+    node: Node<'_>,
+    text: &str,
+    mut kind: SymbolKind,
+    budget: &mut AnalysisBudget,
+) -> Result<(SymbolKind, String, SourceRange), AnalysisError> {
     let mut parts = vec![];
     if let Some(name) = node.child_by_field_name("name") {
-        parts.push(node_text(name, text).to_owned());
+        parts.push(node_text(name, text));
     }
     let mut parent = node.parent();
     // Only members of an impl/trait declaration list are methods. Functions in
@@ -66,18 +80,21 @@ fn qualify(node: Node<'_>, text: &str, mut kind: SymbolKind) -> (SymbolKind, Str
         kind = SymbolKind::Method;
     }
     while let Some(p) = parent {
+        budget.visit_qualification_node()?;
         match p.kind() {
             "impl_item" => {
-                if let Some(target) = p
+                if let Some(target_parts) = p
                     .child_by_field_name("type")
-                    .and_then(|n| impl_target(n, text))
+                    .map(|n| impl_target(n, text, budget))
+                    .transpose()?
+                    .flatten()
                 {
-                    parts.push(target);
+                    parts.extend(target_parts);
                 }
             }
             "mod_item" | "trait_item" | "function_item" | "function_signature_item" => {
                 if let Some(name) = p.child_by_field_name("name") {
-                    parts.push(node_text(name, text).into());
+                    parts.push(node_text(name, text));
                 }
             }
             _ => {}
@@ -85,5 +102,6 @@ fn qualify(node: Node<'_>, text: &str, mut kind: SymbolKind) -> (SymbolKind, Str
         parent = p.parent();
     }
     parts.reverse();
-    (kind, parts.join("::"), source_range(node))
+    budget.charge_joined_name(&parts, "::")?;
+    Ok((kind, parts.join("::"), source_range(node)))
 }

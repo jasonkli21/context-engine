@@ -82,6 +82,65 @@ fn rust_symbols_and_ranges() {
     assert_eq!(a.symbols[0].range.end.byte, text.len());
     assert_eq!(a.symbols[0].name_range.start.column, 3);
 }
+
+#[test]
+fn project_analysis_budgets_allow_the_limit_and_reject_excess() {
+    let source = "mod a { fn b() {} }";
+    let mut syntax = SyntaxAnalyzer::new(
+        tree_sitter_rust::LANGUAGE.into(),
+        include_str!("queries/rust-symbols.scm"),
+    )
+    .unwrap();
+    let exact = AnalysisLimits {
+        max_symbols: 2,
+        max_name_bytes: 7,
+        max_qualification_nodes: 4,
+    };
+    let result = syntax
+        .analyze_with_limits(
+            Language::Rust,
+            Path::new("fixture"),
+            source,
+            rust::qualify,
+            exact,
+        )
+        .unwrap();
+    assert_eq!(result.symbols.len(), 2);
+    assert_eq!(
+        result
+            .symbols
+            .iter()
+            .map(|symbol| symbol.qualified_name.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "a::b"]
+    );
+
+    for limits in [
+        AnalysisLimits {
+            max_symbols: 1,
+            ..exact
+        },
+        AnalysisLimits {
+            max_name_bytes: 6,
+            ..exact
+        },
+        AnalysisLimits {
+            max_qualification_nodes: 3,
+            ..exact
+        },
+    ] {
+        assert!(matches!(
+            syntax.analyze_with_limits(
+                Language::Rust,
+                Path::new("fixture"),
+                source,
+                rust::qualify,
+                limits,
+            ),
+            Err(AnalysisError::LimitExceeded)
+        ));
+    }
+}
 #[test]
 fn python_symbols_and_ranges() {
     let result = analyze(
@@ -173,4 +232,35 @@ fn impl_targets_omit_generic_expressions_and_decorators_are_in_whole_range() {
     assert_eq!(result.symbols[0].range.start.byte, 0);
     assert_eq!(result.symbols[0].range.end.byte, text.len());
     assert_eq!(result.symbols[0].name_range.start.row, 1);
+}
+
+#[test]
+fn rust_reference_and_pointer_impl_targets_do_not_guess_nominal_names() {
+    let result = analyze(
+        Language::Rust,
+        "trait LocalTrait {}\n\
+         struct Foo;\n\
+         struct Wrapper<T>(T);\n\
+         impl LocalTrait for Foo { fn direct() {} }\n\
+         impl LocalTrait for Wrapper<u8> { fn generic() {} }\n\
+         impl LocalTrait for &Foo { fn borrowed() {} }\n\
+         impl LocalTrait for &mut Foo { fn mutable() {} }\n\
+         impl LocalTrait for *const Foo { fn pointer() {} }",
+    );
+    assert_symbols(
+        &result,
+        &[
+            ("LocalTrait", Trait),
+            ("Foo", Struct),
+            ("Foo::direct", Method),
+            ("Wrapper", Struct),
+            ("Wrapper::generic", Method),
+            ("borrowed", Method),
+            ("mutable", Method),
+            ("pointer", Method),
+        ],
+    );
+    assert!(!result.symbols.iter().any(|symbol| {
+        ["Foo::borrowed", "Foo::mutable", "Foo::pointer"].contains(&symbol.qualified_name.as_str())
+    }));
 }

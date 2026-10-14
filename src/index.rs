@@ -60,10 +60,19 @@ fn index_scan(
                             index.diagnostics.extend(result.diagnostics);
                         }
                         Err(error) => {
-                            analysis.status = AnalysisStatus::ParseFailed;
+                            let limit_exceeded = matches!(&error, AnalysisError::LimitExceeded);
+                            analysis.status = if limit_exceeded {
+                                AnalysisStatus::AnalysisLimitExceeded
+                            } else {
+                                AnalysisStatus::ParseFailed
+                            };
                             index.diagnostics.push(AnalysisDiagnostic {
                                 relative_path: file.relative_path.clone(),
-                                kind: DiagnosticKind::ParseFailure,
+                                kind: if limit_exceeded {
+                                    DiagnosticKind::AnalysisLimitExceeded
+                                } else {
+                                    DiagnosticKind::ParseFailure
+                                },
                                 message: error.to_string(),
                                 range: None,
                             });

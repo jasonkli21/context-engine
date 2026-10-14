@@ -224,6 +224,7 @@ pub enum AnalysisStatus {
     InvalidUtf8,
     ReadFailed,
     ParseFailed,
+    AnalysisLimitExceeded,
 }
 impl AnalysisStatus {
     pub fn name(self) -> &'static str {
@@ -235,6 +236,7 @@ impl AnalysisStatus {
             Self::InvalidUtf8 => "invalid_utf8",
             Self::ReadFailed => "read_failed",
             Self::ParseFailed => "parse_failed",
+            Self::AnalysisLimitExceeded => "analysis_limit_exceeded",
         }
     }
 }
@@ -254,6 +256,7 @@ pub enum DiagnosticKind {
     ReadError,
     InvalidUtf8,
     ParseFailure,
+    AnalysisLimitExceeded,
 }
 impl DiagnosticKind {
     pub fn name(self) -> &'static str {
@@ -263,6 +266,7 @@ impl DiagnosticKind {
             Self::ReadError => "read_error",
             Self::InvalidUtf8 => "invalid_utf8",
             Self::ParseFailure => "parse_failure",
+            Self::AnalysisLimitExceeded => "analysis_limit_exceeded",
         }
     }
 }
