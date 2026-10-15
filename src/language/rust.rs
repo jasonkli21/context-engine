@@ -12,6 +12,9 @@ impl LanguageAnalyzer for RustAnalyzer {
     fn language(&self) -> Language {
         Language::Rust
     }
+    fn analyze_graph(&mut self, path: &Path, text: &str) -> Result<AnalyzedFile, AnalysisError> {
+        self.0.analyze_graph(self.language(), path, text, qualify)
+    }
     fn analyze(&mut self, path: &Path, text: &str) -> Result<AnalyzedFile, AnalysisError> {
         self.0.analyze(self.language(), path, text, qualify)
     }

@@ -19,7 +19,7 @@ impl From<SourcePoint> for PointDto {
     }
 }
 #[derive(Serialize)]
-struct RangeDto {
+pub(super) struct RangeDto {
     start: PointDto,
     end: PointDto,
 }
@@ -32,7 +32,7 @@ impl From<SourceRange> for RangeDto {
     }
 }
 #[derive(Serialize)]
-struct SymbolDto<'a> {
+pub(super) struct SymbolDto<'a> {
     name: &'a str,
     qualified_name: &'a str,
     kind: &'static str,

@@ -11,6 +11,8 @@ pub enum IndexError {
     Scan(#[from] ScanError),
     #[error("analyzer initialization failed: {0}")]
     Analyzer(#[from] AnalysisError),
+    #[error("global graph safety limit exceeded")]
+    GraphLimit,
 }
 pub fn index_repository(options: &IndexOptions) -> Result<RepositoryIndex, IndexError> {
     let scan = scan::scan_repository(&ScanOptions {
@@ -19,13 +21,39 @@ pub fn index_repository(options: &IndexOptions) -> Result<RepositoryIndex, Index
         max_line_count_file_bytes: 0,
         probe_git: options.probe_git,
     })?;
-    index_scan(scan, options.max_parse_file_bytes)
+    Ok(analyze_scan(scan, options.max_parse_file_bytes, false)?.0)
 }
 
+pub fn graph_analysis(
+    options: &IndexOptions,
+) -> Result<(RepositoryIndex, Vec<crate::relations::FileRelations>), IndexError> {
+    let scan = scan::scan_repository(&ScanOptions {
+        root: options.root.clone(),
+        count_lines: false,
+        max_line_count_file_bytes: 0,
+        probe_git: options.probe_git,
+    })?;
+    analyze_scan(scan, options.max_parse_file_bytes, true)
+}
+#[cfg(test)]
 fn index_scan(
     scan: RepositoryScan,
     max_parse_file_bytes: u64,
 ) -> Result<RepositoryIndex, IndexError> {
+    Ok(analyze_scan(scan, max_parse_file_bytes, false)?.0)
+}
+
+fn analyze_scan(
+    scan: RepositoryScan,
+    max_parse_file_bytes: u64,
+    graph: bool,
+) -> Result<(RepositoryIndex, Vec<crate::relations::FileRelations>), IndexError> {
+    if graph && scan.files.len().saturating_add(1) > crate::graph::MAX_ENTITIES {
+        return Err(IndexError::GraphLimit);
+    }
+    let mut relation_files = vec![];
+    let mut relation_count = scan.files.len();
+    let file_count = scan.files.len();
     let mut registry = AnalyzerRegistry::new()?;
     let mut index = RepositoryIndex {
         root: scan.root,
@@ -51,8 +79,34 @@ fn index_scan(
                 analysis.status = AnalysisStatus::TooLarge;
             } else {
                 match source::load(&index.root, &file.relative_path, max_parse_file_bytes) {
-                    Ok(text) => match analyzer.analyze(&file.relative_path, &text) {
-                        Ok(result) => {
+                    Ok(text) => match if graph {
+                        analyzer.analyze_graph(&file.relative_path, &text)
+                    } else {
+                        analyzer.analyze(&file.relative_path, &text)
+                    } {
+                        Ok(mut result) => {
+                            if graph {
+                                if file_count
+                                    .saturating_add(index.symbols.len())
+                                    .saturating_add(result.symbols.len())
+                                    .saturating_add(1)
+                                    > crate::graph::MAX_ENTITIES
+                                {
+                                    return Err(IndexError::GraphLimit);
+                                }
+                                if let Some(extraction) = result.relations.take() {
+                                    relation_count = relation_count
+                                        .saturating_add(result.symbols.len())
+                                        .saturating_add(extraction.candidates.len());
+                                    if relation_count > crate::graph::MAX_RELATIONS {
+                                        return Err(IndexError::GraphLimit);
+                                    }
+                                    relation_files.push(crate::relations::FileRelations {
+                                        relative_path: file.relative_path.clone(),
+                                        extraction,
+                                    });
+                                }
+                            }
                             analysis.status = AnalysisStatus::Analyzed;
                             analysis.symbol_count = result.symbols.len();
                             analysis.syntax_error_count = result.syntax_error_count;
@@ -121,7 +175,7 @@ fn index_scan(
         index.scan_warnings.push(ScanWarning { path: None, message: "some paths contain non-UTF-8 bytes; displayed paths use replacement characters and may not be unique".into() });
     }
     index.sort();
-    Ok(index)
+    Ok((index, relation_files))
 }
 pub fn is_supported(language: &Language) -> bool {
     matches!(language, Language::Rust | Language::Python)

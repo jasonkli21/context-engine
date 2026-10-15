@@ -1,10 +1,12 @@
 mod classify;
 mod cli;
 mod git;
+mod graph;
 mod index;
 mod language;
 mod model;
 mod output;
+mod relations;
 mod scan;
 mod source;
 
@@ -21,6 +23,10 @@ use std::{
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let rendered = match cli.command {
+        Command::Graph(args) => graph_command("graph", args, None)?,
+        Command::Deps(args) => graph_query("deps", args)?,
+        Command::Callers(args) => graph_query("callers", args)?,
+        Command::Related(args) => graph_query("related", args)?,
         Command::Index(args) => analyze("index", args, None)?,
         Command::Symbols(args) => analyze("symbols", args, None)?,
         Command::Symbol(args) => analyze("symbol", args.analysis, Some(&args.name))?,
@@ -65,6 +71,44 @@ fn analyze(
     Ok(match args.format {
         Format::Human => output::index_human(command, &index, query),
         Format::Json => output::index_json(command, &index, query)?,
+    })
+}
+
+fn graph_query(
+    command: &str,
+    args: cli::GraphQueryArgs,
+) -> Result<String, Box<dyn std::error::Error>> {
+    graph_command(
+        command,
+        args.analysis,
+        Some((&args.name, args.file.as_deref(), args.depth)),
+    )
+}
+fn graph_command(
+    command: &str,
+    args: cli::AnalysisArgs,
+    query: Option<(&str, Option<&std::path::Path>, u8)>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let graph = graph::build(&model::IndexOptions {
+        root: args.path,
+        max_parse_file_bytes: args.max_parse_file_size,
+        probe_git: true,
+    })?;
+    let result = query.map(|(name, file, depth)| {
+        graph.query(
+            match command {
+                "deps" => graph::QueryKind::Deps,
+                "callers" => graph::QueryKind::Callers,
+                _ => graph::QueryKind::Related,
+            },
+            name,
+            file,
+            depth,
+        )
+    });
+    Ok(match args.format {
+        Format::Human => output::graph_human(command, &graph, query.map(|q| q.0), result.as_ref()),
+        Format::Json => output::graph_json(command, &graph, query.map(|q| q.0), result.as_ref())?,
     })
 }
 

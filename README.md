@@ -12,12 +12,12 @@ The project is intentionally **descriptive rather than normative**. It aims to m
 
 ## Status
 
-**Pre-alpha / Phase 1 implemented; independent Phase 1 review pending.**
-The synchronous CLI scans repositories and builds a fresh in-memory Rust/Python
-symbol inventory, with source ranges, syntax diagnostics, deterministic human
-reports and versioned JSON. Phase 0 was accepted by the maintainer on 2026-10-14.
-Graphs, relationships, persistence, async, MCP, embeddings and model calls remain
-future work.
+**Pre-alpha / Phase 2 implemented; independent Phase 2 review pending.**
+The synchronous CLI scans repositories, indexes Rust/Python symbols, and builds a
+fresh in-memory graph of lexical containment, imports and call-site references.
+The maintainer authorized Phase 2 despite pending final Phase 1 acceptance.
+Phase 0 was accepted on 2026-10-14. Persistence, async, MCP, embeddings and model
+calls remain future work.
 
 See [`docs/current-state.md`](docs/current-state.md) for implementation and review status.
 
@@ -37,6 +37,10 @@ cargo build --release
 ./target/release/ctx symbols . --format json
 ./target/release/ctx symbol RepositoryScan .
 ./target/release/ctx symbol Router.route /path/to/python-project
+./target/release/ctx graph . --format json
+./target/release/ctx deps construct . --depth 2
+./target/release/ctx callers construct .
+./target/release/ctx related construct . --file src/graph.rs
 ```
 
 All commands default to the current directory and accept `--format human|json`.
@@ -132,6 +136,64 @@ in-memory index. Nothing is saved to `.ctx/` or any cache. These commands accept
 - Human symbol locations use one-based lines and byte columns at the symbol name.
   All repository-controlled human text has control characters escaped.
 
+### Repository relationship graph
+
+`graph`, `deps <NAME>`, `callers <NAME>` and `related <NAME>` rebuild a synchronous,
+in-memory graph per command using the same scanner, loading protections and
+`--max-parse-file-size` limit as symbol indexing. Symbols and relation candidates
+come from one loaded source and one parse tree per analyzed file. Symbol-only
+commands skip relation work. No target source is executed.
+
+- Entities are the repository, every scanned file, and each canonical symbol
+  record. Symbol identity is structural (file, kind, declaration range), separate
+  from its name. IDs are index-local integers: repository first, files by path,
+  then symbols in canonical index order. Stable input gives deterministic IDs;
+  edits can renumber them. IDs are not persistent or lineage identifiers.
+- `contains` is lexical source-range containment. A symbol's parent is its nearest
+  strictly containing declaration, otherwise its file. Rust `impl Foo` methods
+  are not contained by the separate `struct Foo` declaration. Ambiguous overlapping
+  ranges fall back conservatively to file ownership.
+- `imports` are unresolved syntactic facts. Rust grouped `use` trees and Python
+  dotted/from/relative imports become atomic targets, preserving aliases and
+  wildcard metadata. Imports are never resolved to files or symbols, and aliases
+  are not used to resolve references.
+- `references` carry `reference_context: call`. Rust supports identifier/scoped
+  callees; Python supports identifier-rooted dotted chains. Complex/dynamic
+  callees are counted as unsupported and omitted. Accepted inner calls still
+  appear when an outer dynamic call is unsupported. Targets contain normalized
+  name segments, never arguments or arbitrary expressions.
+- Reference resolution is best-effort syntax matching in the same file: unique
+  exact qualified name, then unique local name for an unqualified target.
+  Ambiguous and cross-file names remain unresolved. This does not model lexical
+  binding/shadowing, runtime types, dispatch, `self`/`Self` rewriting or compiler
+  resolution. Extraction derivation and resolution quality are separate evidence.
+- Queries first match exact qualified names, falling back to exact local names.
+  Zero matches succeed; multiple roots remain separate groups. `--file <PATH>`
+  filters matches afterward using a scan-root-relative path. `--depth` defaults to
+  1 and accepts 0 through 8; depth 0 returns roots without relation occurrences.
+- `deps` follows outgoing resolved references and includes unresolved imports or
+  references owned by visited entities as leaves. It does not follow containment
+  or inherit a file's imports for each symbol. `callers` follows incoming resolved
+  call-context references: these are **syntactic callers**, not a compiler-complete
+  call graph. `related` follows resolved edges in both directions, including
+  containment, and shows unresolved facts as attached leaves.
+- Repeated occurrences and self-loops remain distinct relations. Iterative traversal
+  handles cycles. Query budgets, shared across root groups, cap visited entity
+  occurrences at 10,000 and emitted relation occurrences at 25,000; exceeding a
+  budget sets `truncated: true` for the affected group and overall result.
+- Each file has an independent relation budget: 16,384 candidates, 4 MiB aggregate
+  normalized target/binding bytes, 50,000 normalization node/segment visits, 64
+  segments per target and 4 KiB per target or alias. Exceeding any limit discards
+  all extracted imports/references for that file, records
+  `analysis_limit_exceeded`, and retains valid Phase 1 symbols and structural
+  containment. Unsupported counts on failed files cover only work before failure.
+  Global ceilings of 1,000,000 entities and 2,000,000 relations fail the graph
+  command clearly. These are safety ceilings, not performance promises.
+
+`graph` human output is a count summary; JSON includes the full graph. These
+commands have no persistence, caching, cross-file import resolution or compiler
+integration. Existing filesystem snapshot and Git-metadata limitations apply.
+
 ### JSON schema v1
 
 All JSON output is wrapped as `{"schema_version":1,"command":"scan","data":{...}}`.
@@ -170,10 +232,38 @@ No source bodies are emitted. Files sort by path; symbols sort by path, start by
 end byte, kind name and qualified name; diagnostics sort by path, range, kind and
 message. Non-UTF-8 paths remain lossy and explicitly warned.
 
+Graph commands also use schema v1. `graph` data include `root`, nullable `git`,
+`id_semantics`, `summary`, `entities`, `relations`, `files`, `relation_files`,
+`diagnostics` and `scan_warnings`. Entities expose `id`, `kind`, nullable `path`,
+and nullable `symbol` (the existing symbol shape). Relation IDs are deterministic
+vector positions after sorting by evidence path/range, kind, source, target,
+metadata and derivation; distinct occurrences are retained. Relations expose
+`id`, `kind`, `source_id`, `target`, `resolution`, `metadata` and `evidence`.
+Targets are tagged `{ "state": "resolved", "entity_id": 1 }` or
+`{ "state": "unresolved", "name": "foo.bar" }`. Evidence contains `path`, nullable
+`range`, nullable `language`, and `derivation`. Metadata is tagged by `kind`:
+`none`, `import` (nullable `binding`, `wildcard`), or `reference`
+(`reference_context: "call"`). Resolution values are `direct_structural`,
+`exact_same_file_qualified_name`, `unique_same_file_local_name` and `unresolved`.
+
+`files` accounts for all discovered files with `symbol_status` and symbol/syntax
+counts. `relation_files` accounts for files whose symbol analysis succeeded,
+including relation `status` (`analyzed`, `extraction_failed`, or
+`analysis_limit_exceeded`), import/reference/unresolved counts and
+`unsupported_candidate_count`. Thus unavailable symbol analysis is not confused
+with successful relation extraction. Summary exposes both categories.
+
+Query commands add `query`, `match_mode`, root ID list `roots`, `depth`,
+`truncated`, and `results` instead of top-level entity/relation arrays. Each result
+contains `root_id`, its entity/relationship records and its own `truncated` flag.
+Output IDs reference the enclosing graph, not positions in a query subset.
+Source bodies are never serialized; optional Git HEAD is repository metadata,
+not an identity for exact dirty working-tree content.
+
 ## Future direction
 
-Later phases may add symbol relationships, graphs, structural Git changes,
-persistence and task-context queries. These capabilities are not implemented.
+Later phases may add richer repository queries, structural Git changes,
+persistence and task-context compilation. These capabilities are not implemented.
 
 ## Why Rust?
 
@@ -249,7 +339,8 @@ Start here:
 - [Current state](docs/current-state.md)
 - [Product requirements](docs/prd.md)
 - [Architecture](docs/architecture.md)
-- [Phase 0 implementation plan](docs/plans/phase-0-implementation-plan.md)
+- [Phase 2 implementation plan](docs/plans/phase-2-implementation-plan.md)
+- [Phase 2 implementation report](docs/reports/phase-2-implementation-report.md)
 - [LLM-assisted development workflow](docs/development/llm-workflow.md)
 - [Context Integrity integration boundary](docs/integrations/context-integrity.md)
 

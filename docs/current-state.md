@@ -2,58 +2,57 @@
 
 **Last updated:** 2026-10-14
 
-**Active phase:** Phase 1 — Syntax and Symbol Index
+**Active phase:** Phase 2 — Repository Relationship Graph
 
-**Overall status:** review findings fixed and locally verified; independent final acceptance pending
+**Overall status:** implemented and locally verified; independent Phase 2 review pending
 
 ## Delivered
 
-- Phase 0 scanner remains intact: `scan`, `stats`, `tree`, canonical ignore/symlink
-  handling, safe optional Git metadata, bounded line counting and schema-v1 output.
-- Fresh synchronous in-memory `index`, `symbols`, and exact `symbol` lookup.
-- Tree-sitter Rust/Python analyzers with project-owned symbol queries, syntax-local
-  qualification, whole/name byte ranges, and language-neutral domain records.
-- Bounded UTF-8 loading (default 1 MiB), component/symlink/regular-file checks,
-  per-file statuses, recoverable read/encoding/parse failures and syntax recovery.
-- Full error/missing-node counts with at most 20 syntax details per file;
-  separate Tree-sitter query-state and project-owned per-file analysis limits,
-  deterministic human and schema-v1 JSON output.
-- Fixtures and regression coverage; public README documents symbol/range semantics.
+- Phase 0 scanner and Phase 1 Rust/Python symbol indexing remain intact, including
+  bounded loading, fail-closed symbol budgets and deterministic schema-v1 output.
+- Fresh synchronous in-memory `graph`, `deps`, `callers` and `related` commands.
+- Explicit index-local repository/file/symbol IDs; lexical range containment;
+  atomic Rust/Python import facts; conservative call-site reference facts.
+- Same-file exact-qualified/unique-local resolution, unresolved targets, separate
+  extraction/resolution evidence, occurrence-preserving relations and adjacency.
+- Cycle-safe iterative traversal, grouped exact-name roots, file filtering,
+  bounded depth/results, explicit truncation and schema-v1 graph/query DTOs.
+- Independent fail-closed relation budgets and global graph safety ceilings;
+  relation-file accounting alongside every file's Phase 1 analysis status.
 
 Evidence: [Phase 0 report](reports/phase-0-implementation-report.md),
 [Phase 1 report](reports/phase-1-implementation-report.md),
-[Phase 1 review-fix report](reports/phase-1-review-fix-report.md), and
-[independent Phase 1 review](reviews/phase-1-independent-review.md).
+[Phase 1 review-fix report](reports/phase-1-review-fix-report.md),
+[independent Phase 1 review](reviews/phase-1-independent-review.md), and
+[Phase 2 report](reports/phase-2-implementation-report.md).
 
 ## Acceptance and verification
 
-- The user explicitly accepted Phase 0 and waived its independent re-review on
-  2026-10-14. Before Phase 1 code changes, `./scripts/verify.sh` passed again:
-  7 unit tests and 16 integration tests. This is user acceptance, not a re-review.
-- Phase 1 review-fix canonical verifier, `cargo check --all-targets`, release build,
-  and CLI smoke checks pass
-  on aarch64 macOS with stable Rust 1.99.0 using the existing isolated `/tmp`
-  toolchain. Final suite: 21 unit tests and 23 integration tests, including all
-  16 unchanged Phase 0 integration tests. No global toolchain setup changed.
-- Release human/JSON indexing and listing pass on Context Engine and the Python
-  Context Integrity repository; exact lookup and zero-match behavior smoke-tested.
-- The independent reviewer's executable verification was blocked by its environment;
-  no cloud/provider or cross-platform CI verification is claimed.
+- Phase 0 was accepted by the user on 2026-10-14 with independent re-review waived.
+- The user explicitly authorized Phase 2 despite Phase 1's remaining final
+  acceptance label, before Phase 2 code changes. Phase 1 final independent
+  disposition remains pending; authorization is not an independent acceptance.
+- Phase 2 baseline canonical verifier passed: 21 unit tests and 23 integration
+  tests, using the existing isolated `/tmp` Rust toolchain and cached dependencies.
+- Phase 2 canonical verifier, all-target check, release build and release smoke
+  pass locally on aarch64 macOS: 32 unit and 31 integration tests, including all
+  unchanged Phase 0/1 regressions. Real Rust/Python repository observations are
+  recorded in the Phase 2 report. Global toolchain setup unchanged.
+- No cloud/provider, cross-platform CI or independent Phase 2 verification claimed.
 
 ## Known limitations
 
-Names are syntax-local, not compiler/package resolved or stable across refactors.
-Only UTF-8 Rust/Python are parsed; generated/vendor source is skipped. Rust nominal
-impl targets omit generics; reference/pointer and unsupported targets contribute no
-guessed qualification. Per-file symbol, name-byte, and qualification-node budgets
-can reject unusually large or deeply nested files. Tree-sitter diagnostics describe
-recovery, not compiler validation. Source is not retained or executed. Live
-filesystem checks leave residual TOCTOU races and do not provide an atomic snapshot.
-Phase 0 heuristic classification, lossy native output paths, ignore preflight cost,
-and optional Git probe limitations still apply.
+Imports remain unresolved. Call-site references and same-file matches are syntax
+heuristics, not binding/type/dispatch or compiler guarantees. IDs are index-local
+and may renumber across edits. Graphs are rebuilt per command; no persistence,
+concurrency, async, MCP, embeddings, model calls or policy behavior exists.
+Relation budgets discard a failed file's extracted facts while retaining valid
+symbols and structural containment. Queries expose truncation on safety overflow.
+UTF-8 Rust/Python only; generated/vendor source skipped. Existing parse recovery,
+lossy native output paths, scanner/Git limitations and filesystem TOCTOU races
+remain; results are not atomic snapshots.
 
 ## Next step
 
-Independent final disposition of the Phase 1 review fixes. Phase 2
-relationships/graphs remain future work. No persistence, concurrency, async, MCP,
-embeddings, model calls or Context Integrity policy behavior was introduced.
+Independent Sol High Phase 2 review, followed by a separate review-fix pass if
+needed. Phase 2 has not been accepted merely because local verification passes.

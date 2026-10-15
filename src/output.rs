@@ -384,3 +384,7 @@ mod tests {
 #[path = "output_index.rs"]
 mod index;
 pub use index::{human as index_human, json as index_json};
+
+#[path = "output_graph.rs"]
+mod graph;
+pub use graph::{human as graph_human, json as graph_json};

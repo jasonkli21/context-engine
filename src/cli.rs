@@ -17,6 +17,14 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Build a fresh in-memory repository relationship graph (syntax evidence).
+    Graph(AnalysisArgs),
+    /// Traverse best-effort outgoing call-site references and unresolved facts.
+    Deps(GraphQueryArgs),
+    /// Find best-effort syntactic callers through resolved call-site references.
+    Callers(GraphQueryArgs),
+    /// Traverse lexical containment and reference neighbors in both directions.
+    Related(GraphQueryArgs),
     /// Build a fresh in-memory syntax/symbol index (no persistence).
     Index(AnalysisArgs),
     /// List Rust and Python source symbols.
@@ -81,4 +89,18 @@ pub struct SymbolArgs {
     pub name: String,
     #[command(flatten)]
     pub analysis: AnalysisArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct GraphQueryArgs {
+    /// Exact qualified name, falling back to exact local name.
+    pub name: String,
+    #[command(flatten)]
+    pub analysis: AnalysisArgs,
+    /// Traversal depth (0 through 8).
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(0..=crate::graph::MAX_DEPTH as i64))]
+    pub depth: u8,
+    /// Narrow name matches to this scan-root-relative file path.
+    #[arg(long)]
+    pub file: Option<PathBuf>,
 }

@@ -278,6 +278,7 @@ pub struct AnalysisDiagnostic {
     pub range: Option<SourceRange>,
 }
 pub struct AnalyzedFile {
+    pub relations: Option<crate::relations::Extraction>,
     pub symbols: Vec<Symbol>,
     pub diagnostics: Vec<AnalysisDiagnostic>,
     pub syntax_error_count: usize,

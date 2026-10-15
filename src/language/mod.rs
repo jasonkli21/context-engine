@@ -1,5 +1,6 @@
 //! Parser-specific syntax objects remain confined to this module tree.
 mod python;
+mod relations;
 mod rust;
 use crate::{
     classify::Language,
@@ -98,6 +99,7 @@ impl AnalysisBudget {
 pub trait LanguageAnalyzer {
     fn language(&self) -> Language;
     fn analyze(&mut self, path: &Path, text: &str) -> Result<AnalyzedFile, AnalysisError>;
+    fn analyze_graph(&mut self, path: &Path, text: &str) -> Result<AnalyzedFile, AnalysisError>;
 }
 pub struct AnalyzerRegistry {
     rust: rust::RustAnalyzer,
@@ -139,9 +141,10 @@ impl SyntaxAnalyzer {
         text: &str,
         qualify: QualifyFn,
     ) -> Result<AnalyzedFile, AnalysisError> {
-        self.analyze_with_limits(language, path, text, qualify, ANALYSIS_LIMITS)
+        self.analyze_mode(language, path, text, qualify, ANALYSIS_LIMITS, false)
     }
 
+    #[cfg(test)]
     fn analyze_with_limits(
         &mut self,
         language: Language,
@@ -150,11 +153,34 @@ impl SyntaxAnalyzer {
         qualify: QualifyFn,
         limits: AnalysisLimits,
     ) -> Result<AnalyzedFile, AnalysisError> {
+        self.analyze_mode(language, path, text, qualify, limits, false)
+    }
+
+    fn analyze_graph(
+        &mut self,
+        language: Language,
+        path: &Path,
+        text: &str,
+        qualify: QualifyFn,
+    ) -> Result<AnalyzedFile, AnalysisError> {
+        self.analyze_mode(language, path, text, qualify, ANALYSIS_LIMITS, true)
+    }
+
+    fn analyze_mode(
+        &mut self,
+        language: Language,
+        path: &Path,
+        text: &str,
+        qualify: QualifyFn,
+        limits: AnalysisLimits,
+        graph: bool,
+    ) -> Result<AnalyzedFile, AnalysisError> {
         let tree = self
             .parser
             .parse(text, None)
             .ok_or_else(|| AnalysisError::Failure("parser returned no tree".into()))?;
         let mut result = AnalyzedFile {
+            relations: None,
             symbols: vec![],
             diagnostics: vec![],
             syntax_error_count: 0,
@@ -206,6 +232,9 @@ impl SyntaxAnalyzer {
             return Err(AnalysisError::Failure(
                 "symbol query match limit exceeded; results discarded".into(),
             ));
+        }
+        if graph {
+            result.relations = Some(relations::extract(tree.root_node(), text, &language));
         }
         // Cursor traversal avoids call-stack growth on deeply nested untrusted input.
         let mut walk = tree.walk();
