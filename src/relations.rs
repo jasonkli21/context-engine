@@ -42,7 +42,6 @@ impl Derivation {
 pub enum Resolution {
     DirectStructural,
     ExactSameFileQualifiedName,
-    UniqueSameFileLocalName,
     Unresolved,
 }
 impl Resolution {
@@ -50,7 +49,6 @@ impl Resolution {
         match self {
             Self::DirectStructural => "direct_structural",
             Self::ExactSameFileQualifiedName => "exact_same_file_qualified_name",
-            Self::UniqueSameFileLocalName => "unique_same_file_local_name",
             Self::Unresolved => "unresolved",
         }
     }
@@ -117,4 +115,15 @@ pub struct RelationFileAnalysis {
 pub struct FileRelations {
     pub relative_path: PathBuf,
     pub extraction: Extraction,
+}
+
+/// Owned candidate text and the evidence path duplicated by graph construction.
+pub fn candidate_bytes(c: &Candidate, path: &std::path::Path) -> usize {
+    c.target
+        .len()
+        .saturating_add(path.as_os_str().len())
+        .saturating_add(match &c.metadata {
+            Metadata::Import { binding, .. } => binding.as_ref().map_or(0, String::len),
+            _ => 0,
+        })
 }

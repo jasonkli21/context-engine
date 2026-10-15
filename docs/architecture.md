@@ -764,6 +764,19 @@ This sequencing is deliberate.
 
 ---
 
+## Aggregate resource boundaries
+
+Per-file limits do not bound repository-wide retention or derived output. Keep
+explicit, hierarchical limits for discovery/preflight work, repository symbols
+and text, graph records and repeated evidence text, query roots, traversal, and
+serialized output. Check before retaining aggregate results. Discovery/index/graph
+overflow fails the command without a partial repository; bounded queries expose
+root omissions separately from traversal truncation. Output limits apply after
+JSON escaping and before stdout. Internal constants and injected small-limit tests
+keep this synchronous design auditable without adding configuration frameworks.
+
+---
+
 ## 29. Architecture review checklist
 
 Before accepting a change, ask:

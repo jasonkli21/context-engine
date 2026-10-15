@@ -340,3 +340,35 @@ fn graph_symlinks_and_human_control_escaping() {
         assert!(!String::from_utf8(out).unwrap().contains('\u{1b}'));
     }
 }
+
+#[test]
+fn production_root_limit_reports_omissions_in_json_and_human_output() {
+    let dir = TempDir::new().unwrap();
+    write(dir.path(), "a.py", &"def helper(): pass\n".repeat(128));
+    write(dir.path(), "b.py", "def helper(): pass\n");
+    for command in ["deps", "callers", "related"] {
+        let (v, bytes) = run(dir.path(), command, Some("helper"), &["--depth", "0"]);
+        assert_eq!(v["data"]["roots_truncated"], true);
+        assert_eq!(v["data"]["truncated"], true);
+        assert_eq!(v["data"]["roots"].as_array().unwrap().len(), 128);
+        assert_eq!(v["data"]["results"].as_array().unwrap().len(), 128);
+        assert_eq!(
+            bytes,
+            run(dir.path(), command, Some("helper"), &["--depth", "0"]).1
+        );
+        let (filtered, _) = run(
+            dir.path(),
+            command,
+            Some("helper"),
+            &["--file", "a.py", "--depth", "0"],
+        );
+        assert_eq!(filtered["data"]["roots_truncated"], false);
+        cargo_bin_cmd!("ctx")
+            .args([command, "helper"])
+            .arg(dir.path())
+            .args(["--depth", "0"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("roots_truncated: true"));
+    }
+}

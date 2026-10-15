@@ -92,6 +92,11 @@ or probe Git. Help and version: `ctx --help`, `ctx scan --help`, `ctx --version`
   `null`.
 - Scans are local and read-only, with no execution of analyzed code or network calls.
   Results reflect live filesystem state, not an atomic snapshot.
+- Discovery has internal aggregate limits: 50,000 entries (files, directories and
+  symlinks), 4 MiB of relative-path bytes per walk, 1,000 warnings / 1 MiB of warning
+  details, 1 MiB of consulted ignore-control content, and 256 MiB of line-count I/O.
+  The ignore-free safety preflight has the same entry/path limits, including ignored
+  entries. Exceeding a limit fails the command without a partial inventory.
 
 ### Syntax and symbol indexing
 
@@ -133,6 +138,11 @@ in-memory index. Nothing is saved to `.ctx/` or any cache. These commands accept
   and 25,000 qualification-node visits. Exceeding a limit discards all symbols
   from that file and records `analysis_limit_exceeded`. Diagnostics contain
   locations and fixed descriptions, not source bodies.
+- Repository analysis independently caps retained symbols at 50,000, local plus
+  qualified names at 8 MiB, symbol paths plus diagnostic details at 16 MiB, and
+  detailed diagnostics at 10,000. Aggregate overflow fails the whole command;
+  it is distinct from a recoverable per-file analysis failure. Index and graph
+  JSON serialization has a 64 MiB byte limit, checked before writing stdout.
 - Human symbol locations use one-based lines and byte columns at the symbol name.
   All repository-controlled human text has control characters escaped.
 
@@ -156,15 +166,17 @@ commands skip relation work. No target source is executed.
 - `imports` are unresolved syntactic facts. Rust grouped `use` trees and Python
   dotted/from/relative imports become atomic targets, preserving aliases and
   wildcard metadata. Imports are never resolved to files or symbols, and aliases
-  are not used to resolve references.
+  are not used to resolve references. Rust grouped `self` denotes its group prefix:
+  `use foo::{self as f, bar}` emits `foo` (binding `f`) and `foo::bar`.
 - `references` carry `reference_context: call`. Rust supports identifier/scoped
   callees; Python supports identifier-rooted dotted chains. Complex/dynamic
   callees are counted as unsupported and omitted. Accepted inner calls still
   appear when an outer dynamic call is unsupported. Targets contain normalized
-  name segments, never arguments or arbitrary expressions.
-- Reference resolution is best-effort syntax matching in the same file: unique
-  exact qualified name, then unique local name for an unqualified target.
-  Ambiguous and cross-file names remain unresolved. This does not model lexical
+  name segments, never arguments or arbitrary expressions. Evidence ranges cover
+  exactly the callee syntax, excluding arguments and call parentheses.
+- Reference resolution requires a unique exact same-file qualified-name match.
+  A bare call never resolves to a method/nested declaration solely because its
+  local name is unique. Ambiguous and cross-file names remain unresolved. This does not model lexical
   binding/shadowing, runtime types, dispatch, `self`/`Self` rewriting or compiler
   resolution. Extraction derivation and resolution quality are separate evidence.
 - Queries first match exact qualified names, falling back to exact local names.
@@ -181,14 +193,20 @@ commands skip relation work. No target source is executed.
   handles cycles. Query budgets, shared across root groups, cap visited entity
   occurrences at 10,000 and emitted relation occurrences at 25,000; exceeding a
   budget sets `truncated: true` for the affected group and overall result.
+  At most 128 matching roots are retained in canonical order; omitted roots set
+  `roots_truncated: true` and overall `truncated: true`. Returned root groups
+  retain their independent traversal truncation flags.
 - Each file has an independent relation budget: 16,384 candidates, 4 MiB aggregate
   normalized target/binding bytes, 50,000 normalization node/segment visits, 64
   segments per target and 4 KiB per target or alias. Exceeding any limit discards
   all extracted imports/references for that file, records
   `analysis_limit_exceeded`, and retains valid Phase 1 symbols and structural
   containment. Unsupported counts on failed files cover only work before failure.
-  Global ceilings of 1,000,000 entities and 2,000,000 relations fail the graph
-  command clearly. These are safety ceilings, not performance promises.
+  Global ceilings of 50,000 entities, 100,000 relations and 16 MiB of aggregate
+  candidate target/alias plus repeated evidence-path bytes fail the graph command
+  clearly. These complement the scanner/index limits. Full graph and query JSON
+  is capped at 64 MiB after escaping; overflow fails before emitting any JSON.
+  These are safety ceilings, not performance promises.
 
 `graph` human output is a count summary; JSON includes the full graph. These
 commands have no persistence, caching, cross-file import resolution or compiler
@@ -244,7 +262,7 @@ Targets are tagged `{ "state": "resolved", "entity_id": 1 }` or
 `range`, nullable `language`, and `derivation`. Metadata is tagged by `kind`:
 `none`, `import` (nullable `binding`, `wildcard`), or `reference`
 (`reference_context: "call"`). Resolution values are `direct_structural`,
-`exact_same_file_qualified_name`, `unique_same_file_local_name` and `unresolved`.
+`exact_same_file_qualified_name` and `unresolved`.
 
 `files` accounts for all discovered files with `symbol_status` and symbol/syntax
 counts. `relation_files` accounts for files whose symbol analysis succeeded,
@@ -254,7 +272,7 @@ including relation `status` (`analyzed`, `extraction_failed`, or
 with successful relation extraction. Summary exposes both categories.
 
 Query commands add `query`, `match_mode`, root ID list `roots`, `depth`,
-`truncated`, and `results` instead of top-level entity/relation arrays. Each result
+`roots_truncated`, `truncated`, and `results` instead of top-level entity/relation arrays. Each result
 contains `root_id`, its entity/relationship records and its own `truncated` flag.
 Output IDs reference the enclosing graph, not positions in a query subset.
 Source bodies are never serialized; optional Git HEAD is repository metadata,

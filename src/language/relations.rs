@@ -216,7 +216,12 @@ impl<'a> Extractor<'a> {
                     let mut parts = prefix;
                     if let Some(target) = target {
                         match self.path(target, false) {
-                            Ok(path) => parts.extend(path),
+                            Ok(path) => {
+                                // A grouped `self` denotes the accumulated group prefix.
+                                if parts.is_empty() || target.kind() != "self" {
+                                    parts.extend(path);
+                                }
+                            }
                             Err(Failure::Unsupported) => {
                                 self.unsupported += 1;
                                 continue;
@@ -327,11 +332,12 @@ impl<'a> Extractor<'a> {
                     let callee = node
                         .child_by_field_name("function")
                         .ok_or(Failure::Unsupported);
-                    callee.and_then(|n| self.path(n, python)).and_then(|parts| {
+                    callee.and_then(|callee| {
+                        let parts = self.path(callee, python)?;
                         self.emit(
                             &parts,
                             if python { "." } else { "::" },
-                            node,
+                            callee,
                             None,
                             false,
                             if python {
@@ -425,6 +431,62 @@ mod tests {
     }
     fn targets(e: &Extraction) -> Vec<&str> {
         e.candidates.iter().map(|c| c.target.as_str()).collect()
+    }
+    #[test]
+    fn callee_ranges_exclude_arguments_and_parentheses() {
+        for (text, python, names) in [
+            (
+                "def f():\n    helper(123)\n    C.unique(helper())\n",
+                true,
+                vec!["helper", "C.unique", "helper"],
+            ),
+            (
+                "fn f() { helper(123); C::unique(helper()); }",
+                false,
+                vec!["helper", "C::unique", "helper"],
+            ),
+        ] {
+            let extraction = analyze(text, python, LIMITS);
+            assert_eq!(extraction.candidates.len(), names.len());
+            for (candidate, name) in extraction.candidates.iter().zip(names) {
+                let start = candidate.range.start.byte;
+                let end = candidate.range.end.byte;
+                assert_eq!(&text[start..end], name);
+                assert_eq!(end - start, name.len());
+                assert_eq!(text.as_bytes()[end], b'(');
+                assert_eq!(candidate.target, name);
+            }
+        }
+    }
+    #[test]
+    fn rust_grouped_self_denotes_prefix_and_preserves_aliases() {
+        let e = analyze(
+            "use foo::{self, bar}; use foo::{self as f, bar}; use foo::nested::{self, Thing}; use self::x; use super::x; use crate::x::Y;",
+            false,
+            LIMITS,
+        );
+        let targets: Vec<_> = e.candidates.iter().map(|c| c.target.as_str()).collect();
+        assert_eq!(
+            targets,
+            [
+                "foo",
+                "foo::bar",
+                "foo",
+                "foo::bar",
+                "foo::nested",
+                "foo::nested::Thing",
+                "self::x",
+                "super::x",
+                "crate::x::Y"
+            ]
+        );
+        assert_eq!(
+            e.candidates[2].metadata,
+            Metadata::Import {
+                binding: Some("f".into()),
+                wildcard: false
+            }
+        );
     }
     #[test]
     fn rust_import_matrix() {

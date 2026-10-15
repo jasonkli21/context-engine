@@ -13,6 +13,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ScanError {
+    #[error("repository scan safety limit exceeded")]
+    LimitExceeded,
     #[error("cannot access scan root {path}: {source}; provide an existing readable directory")]
     Root { path: PathBuf, source: io::Error },
     #[error("scan root {0} is not a directory; provide a directory path")]
@@ -30,7 +32,83 @@ pub enum ScanError {
     },
 }
 
+#[derive(Clone, Copy)]
+struct ScanLimits {
+    entries: usize,
+    path_bytes: usize,
+    warnings: usize,
+    warning_bytes: usize,
+    line_bytes: u64,
+    ignore_bytes: u64,
+}
+const SCAN_LIMITS: ScanLimits = ScanLimits {
+    entries: 50_000,
+    path_bytes: 4 * 1024 * 1024,
+    warnings: 1_000,
+    warning_bytes: 1024 * 1024,
+    line_bytes: 256 * 1024 * 1024,
+    ignore_bytes: 1024 * 1024,
+};
+struct ScanBudget {
+    limits: ScanLimits,
+    entries: usize,
+    paths: usize,
+    warnings: usize,
+    details: usize,
+    lines: u64,
+    ignores: u64,
+}
+impl ScanBudget {
+    fn new(limits: ScanLimits) -> Self {
+        Self {
+            limits,
+            entries: 0,
+            paths: 0,
+            warnings: 0,
+            details: 0,
+            lines: 0,
+            ignores: 0,
+        }
+    }
+    fn entry(&mut self, path: &Path) -> Result<(), ScanError> {
+        self.entries = self.entries.saturating_add(1);
+        self.paths = self.paths.saturating_add(path.as_os_str().len());
+        if self.entries > self.limits.entries || self.paths > self.limits.path_bytes {
+            return Err(ScanError::LimitExceeded);
+        }
+        Ok(())
+    }
+    fn warning(
+        &mut self,
+        warnings: &mut Vec<ScanWarning>,
+        warning: ScanWarning,
+    ) -> Result<(), ScanError> {
+        self.warnings += 1;
+        self.details = self
+            .details
+            .saturating_add(warning.message.len())
+            .saturating_add(warning.path.as_ref().map_or(0, |p| p.as_os_str().len()));
+        if self.warnings > self.limits.warnings || self.details > self.limits.warning_bytes {
+            return Err(ScanError::LimitExceeded);
+        }
+        warnings.push(warning);
+        Ok(())
+    }
+    fn ignore(&mut self, bytes: u64) -> Result<(), ScanError> {
+        self.ignores = self.ignores.saturating_add(bytes);
+        if self.ignores > self.limits.ignore_bytes {
+            return Err(ScanError::LimitExceeded);
+        }
+        Ok(())
+    }
+}
 pub fn scan_repository(options: &ScanOptions) -> Result<RepositoryScan, ScanError> {
+    scan_with_limits(options, SCAN_LIMITS)
+}
+fn scan_with_limits(
+    options: &ScanOptions,
+    limits: ScanLimits,
+) -> Result<RepositoryScan, ScanError> {
     let root = fs::canonicalize(&options.root).map_err(|source| ScanError::Root {
         path: options.root.clone(),
         source,
@@ -43,7 +121,8 @@ pub fn scan_repository(options: &ScanOptions) -> Result<RepositoryScan, ScanErro
         path: root.clone(),
         source,
     })?;
-    reject_symlink_ignore_files(&root)?;
+    reject_symlink_ignore_files(&root, limits)?;
+    let mut budget = ScanBudget::new(limits);
     let mut scan = RepositoryScan {
         root: root.clone(),
         files: vec![],
@@ -66,21 +145,31 @@ pub fn scan_repository(options: &ScanOptions) -> Result<RepositoryScan, ScanErro
                 if source.depth() == Some(0) {
                     return Err(ScanError::Traversal { path: root, source });
                 }
-                scan.warnings.push(ScanWarning {
-                    path: source
-                        .path_in_error()
-                        .and_then(|path| path.strip_prefix(&root).ok())
-                        .map(Path::to_path_buf),
-                    message: format!("traversal: {source}"),
-                });
+                budget.entry(Path::new(""))?;
+                budget.warning(
+                    &mut scan.warnings,
+                    ScanWarning {
+                        path: source
+                            .path_in_error()
+                            .and_then(|path| path.strip_prefix(&root).ok())
+                            .map(Path::to_path_buf),
+                        message: format!("traversal: {source}"),
+                    },
+                )?;
                 continue;
             }
         };
+        if entry.depth() != 0 {
+            budget.entry(entry.path().strip_prefix(&root).unwrap_or(entry.path()))?;
+        }
         if let Some(error) = entry.error() {
-            scan.warnings.push(ScanWarning {
-                path: entry.path().strip_prefix(&root).ok().map(Path::to_path_buf),
-                message: format!("ignore rules: {error}"),
-            });
+            budget.warning(
+                &mut scan.warnings,
+                ScanWarning {
+                    path: entry.path().strip_prefix(&root).ok().map(Path::to_path_buf),
+                    message: format!("ignore rules: {error}"),
+                },
+            )?;
         }
         if entry.depth() == 0 {
             continue;
@@ -88,10 +177,13 @@ pub fn scan_repository(options: &ScanOptions) -> Result<RepositoryScan, ScanErro
         let relative_path = match entry.path().strip_prefix(&root) {
             Ok(path) => path.to_path_buf(),
             Err(error) => {
-                scan.warnings.push(ScanWarning {
-                    path: None,
-                    message: format!("skipped path outside scan root: {error}"),
-                });
+                budget.warning(
+                    &mut scan.warnings,
+                    ScanWarning {
+                        path: None,
+                        message: format!("skipped path outside scan root: {error}"),
+                    },
+                )?;
                 continue;
             }
         };
@@ -113,10 +205,13 @@ pub fn scan_repository(options: &ScanOptions) -> Result<RepositoryScan, ScanErro
             Ok(metadata) if metadata.is_file() => metadata,
             Ok(_) => continue,
             Err(error) => {
-                scan.warnings.push(ScanWarning {
-                    path: Some(relative_path),
-                    message: format!("metadata: {error}"),
-                });
+                budget.warning(
+                    &mut scan.warnings,
+                    ScanWarning {
+                        path: Some(relative_path),
+                        message: format!("metadata: {error}"),
+                    },
+                )?;
                 continue;
             }
         };
@@ -126,13 +221,23 @@ pub fn scan_repository(options: &ScanOptions) -> Result<RepositoryScan, ScanErro
             && language.is_text()
             && metadata.len() <= options.max_line_count_file_bytes
         {
-            match count_lines(entry.path(), options.max_line_count_file_bytes) {
+            // Reserve the extra byte used to detect growth after discovery.
+            budget.lines = budget
+                .lines
+                .saturating_add(metadata.len().saturating_add(1));
+            if budget.lines > limits.line_bytes {
+                return Err(ScanError::LimitExceeded);
+            }
+            match count_lines(entry.path(), metadata.len()) {
                 Ok(lines) => Some(lines),
                 Err(error) => {
-                    scan.warnings.push(ScanWarning {
-                        path: Some(relative_path.clone()),
-                        message: format!("line count unavailable: {error}"),
-                    });
+                    budget.warning(
+                        &mut scan.warnings,
+                        ScanWarning {
+                            path: Some(relative_path.clone()),
+                            message: format!("line count unavailable: {error}"),
+                        },
+                    )?;
                     None
                 }
             }
@@ -153,7 +258,9 @@ pub fn scan_repository(options: &ScanOptions) -> Result<RepositoryScan, ScanErro
     if options.probe_git {
         let (metadata, warnings) = git::probe(&root);
         scan.git = metadata;
-        scan.warnings.extend(warnings);
+        for warning in warnings {
+            budget.warning(&mut scan.warnings, warning)?;
+        }
     }
     scan.warnings
         .sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.message.cmp(&b.message)));
@@ -181,15 +288,18 @@ impl ErrorPath for ignore::Error {
     }
 }
 
-fn reject_symlink_ignore_files(root: &Path) -> Result<(), ScanError> {
-    fn check_candidate(directory: &Path) -> Result<(), ScanError> {
+fn reject_symlink_ignore_files(root: &Path, limits: ScanLimits) -> Result<(), ScanError> {
+    let mut budget = ScanBudget::new(limits);
+    fn check_candidate(directory: &Path, budget: &mut ScanBudget) -> Result<(), ScanError> {
         for name in [".gitignore", ".ignore"] {
             let path = directory.join(name);
             match fs::symlink_metadata(&path) {
                 Ok(metadata) if metadata.file_type().is_symlink() => {
                     return Err(ScanError::SymlinkIgnoreFile { path });
                 }
-                Ok(_) => {}
+                Ok(metadata) => {
+                    budget.ignore(metadata.len())?;
+                }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(source) => {
                     return Err(ScanError::IgnorePreflight { path, source });
@@ -205,7 +315,7 @@ fn reject_symlink_ignore_files(root: &Path) -> Result<(), ScanError> {
             .components()
             .any(|component| component.as_os_str() == ".git")
         {
-            check_candidate(directory)?;
+            check_candidate(directory, &mut budget)?;
         }
     }
 
@@ -228,7 +338,10 @@ fn reject_symlink_ignore_files(root: &Path) -> Result<(), ScanError> {
             // The regular traversal reports recoverable child failures. A directory
             // that cannot be entered cannot expose an ignore control file to either
             // traversal, so it is safe to defer its diagnostic.
-            Err(error) if error.depth() != Some(0) => continue,
+            Err(error) if error.depth() != Some(0) => {
+                budget.entry(Path::new(""))?;
+                continue;
+            }
             Err(source) => {
                 return Err(ScanError::Traversal {
                     path: root.to_path_buf(),
@@ -239,9 +352,21 @@ fn reject_symlink_ignore_files(root: &Path) -> Result<(), ScanError> {
         if entry.depth() == 0 {
             continue;
         }
+        budget.entry(entry.path().strip_prefix(root).unwrap_or(entry.path()))?;
         let Some(file_type) = entry.file_type() else {
             continue;
         };
+        if file_type.is_file()
+            && matches!(entry.file_name().to_str(), Some(".gitignore" | ".ignore"))
+        {
+            let metadata = fs::symlink_metadata(entry.path()).map_err(|source| {
+                ScanError::IgnorePreflight {
+                    path: entry.path().into(),
+                    source,
+                }
+            })?;
+            budget.ignore(metadata.len())?;
+        }
         if file_type.is_symlink()
             && matches!(entry.file_name().to_str(), Some(".gitignore" | ".ignore"))
         {
@@ -309,6 +434,132 @@ fn count_reader(mut reader: impl BufRead, max_bytes: u64) -> io::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn discovery_limits_include_directories_paths_and_ignored_preflight_work() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("d")).unwrap();
+        fs::write(dir.path().join("d/a.rs"), "fn f() {}\n").unwrap();
+        let options = ScanOptions {
+            root: dir.path().into(),
+            count_lines: false,
+            max_line_count_file_bytes: 100,
+            probe_git: false,
+        };
+        let exact = ScanLimits {
+            entries: 2,
+            path_bytes: "d".len() + "d/a.rs".len(),
+            ..SCAN_LIMITS
+        };
+        let scan = scan_with_limits(&options, exact).unwrap();
+        assert_eq!((scan.files.len(), scan.directories.len()), (1, 1));
+        for limits in [
+            ScanLimits {
+                entries: 1,
+                ..exact
+            },
+            ScanLimits {
+                path_bytes: exact.path_bytes - 1,
+                ..exact
+            },
+        ] {
+            assert!(matches!(
+                scan_with_limits(&options, limits),
+                Err(ScanError::LimitExceeded)
+            ));
+        }
+        fs::write(dir.path().join(".ignore"), "d/\n").unwrap();
+        // Even though ignored discovery would retain only .ignore, preflight must stop.
+        assert!(matches!(
+            scan_with_limits(
+                &options,
+                ScanLimits {
+                    entries: 2,
+                    ..SCAN_LIMITS
+                }
+            ),
+            Err(ScanError::LimitExceeded)
+        ));
+    }
+    #[test]
+    fn warning_ignore_and_line_work_budgets_fail_closed() {
+        let mut budget = ScanBudget::new(ScanLimits {
+            warnings: 1,
+            warning_bytes: 2,
+            ..SCAN_LIMITS
+        });
+        let mut warnings = vec![];
+        budget
+            .warning(
+                &mut warnings,
+                ScanWarning {
+                    path: None,
+                    message: "ab".into(),
+                },
+            )
+            .unwrap();
+        assert!(
+            budget
+                .warning(
+                    &mut warnings,
+                    ScanWarning {
+                        path: None,
+                        message: "".into()
+                    }
+                )
+                .is_err()
+        );
+        assert_eq!(warnings.len(), 1);
+        let mut budget = ScanBudget::new(ScanLimits {
+            warning_bytes: 1,
+            ..SCAN_LIMITS
+        });
+        assert!(
+            budget
+                .warning(
+                    &mut vec![],
+                    ScanWarning {
+                        path: None,
+                        message: "ab".into()
+                    }
+                )
+                .is_err()
+        );
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.rs"), "ab").unwrap();
+        fs::write(dir.path().join("b.rs"), "cd").unwrap();
+        let options = ScanOptions {
+            root: dir.path().into(),
+            count_lines: true,
+            max_line_count_file_bytes: 100,
+            probe_git: false,
+        };
+        assert!(
+            scan_with_limits(
+                &options,
+                ScanLimits {
+                    line_bytes: 6,
+                    ..SCAN_LIMITS
+                }
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            scan_with_limits(
+                &options,
+                ScanLimits {
+                    line_bytes: 5,
+                    ..SCAN_LIMITS
+                }
+            ),
+            Err(ScanError::LimitExceeded)
+        ));
+        let mut budget = ScanBudget::new(ScanLimits {
+            ignore_bytes: 3,
+            ..SCAN_LIMITS
+        });
+        budget.ignore(3).unwrap();
+        assert!(budget.ignore(1).is_err());
+    }
     #[test]
     fn physical_lines() {
         for (bytes, expected) in [

@@ -388,3 +388,31 @@ pub use index::{human as index_human, json as index_json};
 #[path = "output_graph.rs"]
 mod graph;
 pub use graph::{human as graph_human, json as graph_json};
+
+// Serialize into a bounded buffer before stdout: failure cannot emit partial JSON.
+const MAX_JSON_BYTES: usize = 64 * 1024 * 1024;
+fn bounded_json(value: &impl Serialize, limit: usize) -> Result<String, serde_json::Error> {
+    struct Buffer {
+        bytes: Vec<u8>,
+        limit: usize,
+    }
+    impl std::io::Write for Buffer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
+                return Err(std::io::Error::other("JSON output safety limit exceeded"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut buffer = Buffer {
+        bytes: vec![],
+        limit,
+    };
+    serde_json::to_writer_pretty(&mut buffer, value)?;
+    // serde_json emits UTF-8 only.
+    Ok(String::from_utf8(buffer.bytes).expect("JSON is UTF-8"))
+}

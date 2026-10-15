@@ -1,6 +1,6 @@
 //! Explicit schema-v1 adapters; no domain serialization or source access.
 use super::{
-    Envelope, GitDto, WarningDto, escape_controls,
+    Envelope, GitDto, MAX_JSON_BYTES, WarningDto, bounded_json, escape_controls,
     index::{RangeDto, SymbolDto},
     relative,
 };
@@ -201,6 +201,8 @@ struct ReportDto<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     truncated: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    roots_truncated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     results: Option<Vec<RootDto<'a>>>,
 }
 pub fn json<'a>(
@@ -273,6 +275,7 @@ pub fn json<'a>(
         roots: result.map(|r| r.roots.iter().map(|id| id.0).collect()),
         depth: result.map(|r| r.depth),
         truncated: result.map(|r| r.truncated),
+        roots_truncated: result.map(|r| r.roots_truncated),
         results: result.map(|r| {
             r.results
                 .iter()
@@ -285,11 +288,14 @@ pub fn json<'a>(
                 .collect()
         }),
     };
-    serde_json::to_string_pretty(&Envelope {
-        schema_version: 1,
-        command: command.into(),
-        data,
-    })
+    bounded_json(
+        &Envelope {
+            schema_version: 1,
+            command: command.into(),
+            data,
+        },
+        MAX_JSON_BYTES,
+    )
 }
 fn label(g: &RepositoryGraph, id: EntityId) -> String {
     if let Some(s) = g.symbol(id) {
@@ -363,7 +369,22 @@ pub fn human(
                 text.push_str("  truncated: true\n");
             }
         }
-        text.push_str(&format!("\ntruncated: {}\n", result.truncated));
+        text.push_str(&format!(
+            "\nroots_truncated: {}\ntruncated: {}\n",
+            result.roots_truncated, result.truncated
+        ));
     }
     text.trim_end().into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn json_limit_is_exact_and_accounts_for_escaping() {
+        let value = vec!["\n\u{0001}", "target"];
+        let expected = serde_json::to_string_pretty(&value).unwrap();
+        assert_eq!(bounded_json(&value, expected.len()).unwrap(), expected);
+        assert!(bounded_json(&value, expected.len() - 1).is_err());
+    }
 }

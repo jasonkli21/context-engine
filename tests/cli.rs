@@ -766,3 +766,28 @@ fn human_tree_escapes_control_characters_in_repository_filenames() {
     assert!(!text.contains('\u{1b}'));
     assert_eq!(text.lines().filter(|line| line.contains("bad")).count(), 1);
 }
+
+#[test]
+fn aggregate_scan_failure_emits_no_partial_json_for_any_pipeline() {
+    let dir = TempDir::new().unwrap();
+    write(dir.path(), ".ignore", &vec![b' '; 1024 * 1024 + 1]);
+    write(dir.path(), "ok.py", b"def helper(): pass\n");
+    for command in [
+        "scan", "stats", "tree", "index", "symbols", "symbol", "graph", "deps", "callers",
+        "related",
+    ] {
+        let mut cmd = cargo_bin_cmd!("ctx");
+        cmd.arg(command);
+        if ["symbol", "deps", "callers", "related"].contains(&command) {
+            cmd.arg("helper");
+        }
+        cmd.arg(dir.path())
+            .args(["--format", "json"])
+            .assert()
+            .failure()
+            .stdout("")
+            .stderr(predicate::str::contains(
+                "repository scan safety limit exceeded",
+            ));
+    }
+}

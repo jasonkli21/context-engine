@@ -8,9 +8,11 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     path::Path,
 };
-pub const MAX_ENTITIES: usize = 1_000_000;
-pub const MAX_RELATIONS: usize = 2_000_000;
+pub const MAX_ENTITIES: usize = 50_000;
+pub const MAX_RELATIONS: usize = 100_000;
+pub const MAX_RELATION_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_DEPTH: u8 = 8;
+const MAX_QUERY_ROOTS: usize = 128;
 const MAX_VISITED: usize = 10_000;
 const MAX_EMITTED: usize = 25_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -48,6 +50,7 @@ pub struct RepositoryGraph {
 }
 #[derive(Clone, Copy)]
 struct GraphLimits {
+    text_bytes: usize,
     entities: usize,
     relations: usize,
 }
@@ -57,6 +60,7 @@ pub fn build(options: &IndexOptions) -> Result<RepositoryGraph, IndexError> {
         index,
         files,
         GraphLimits {
+            text_bytes: MAX_RELATION_BYTES,
             entities: MAX_ENTITIES,
             relations: MAX_RELATIONS,
         },
@@ -72,6 +76,28 @@ fn construct(
         .saturating_add(index.symbols.len())
         > limits.entities
     {
+        return Err(IndexError::GraphLimit);
+    }
+    let text_bytes = index
+        .files
+        .iter()
+        .map(|f| f.relative_path.as_os_str().len())
+        .sum::<usize>()
+        + index
+            .symbols
+            .iter()
+            .map(|s| s.relative_path.as_os_str().len())
+            .sum::<usize>()
+        + files
+            .iter()
+            .flat_map(|f| {
+                f.extraction
+                    .candidates
+                    .iter()
+                    .map(|c| candidate_bytes(c, &f.relative_path))
+            })
+            .sum::<usize>();
+    if text_bytes > limits.text_bytes {
         return Err(IndexError::GraphLimit);
     }
     let mut entities = vec![Entity::Repository];
@@ -133,14 +159,12 @@ fn construct(
                 .collect(),
         );
         let mut qualified: HashMap<&str, Vec<EntityId>> = HashMap::new();
-        let mut local: HashMap<&str, Vec<EntityId>> = HashMap::new();
         // Build maps separately from mutation of graph relations to keep ownership simple.
         let mut containment = vec![];
         for &i in &indices {
             let s = &g.index.symbols[i];
             let id = EntityId((symbol_offset + i) as u32);
             qualified.entry(&s.qualified_name).or_default().push(id);
-            local.entry(&s.name).or_default().push(id);
             containment.push(Relation {
                 source: lexical.owner(s.range, true).unwrap_or(file_id),
                 target: Target::Resolved(id),
@@ -173,21 +197,6 @@ fn construct(
                             Target::Resolved(ids[0]),
                             Resolution::ExactSameFileQualifiedName,
                         )
-                    } else if !c
-                        .target
-                        .contains(if language == crate::classify::Language::Rust {
-                            "::"
-                        } else {
-                            "."
-                        })
-                    {
-                        match local.get(c.target.as_str()).filter(|ids| ids.len() == 1) {
-                            Some(ids) => (
-                                Target::Resolved(ids[0]),
-                                Resolution::UniqueSameFileLocalName,
-                            ),
-                            None => (Target::Unresolved(c.target), Resolution::Unresolved),
-                        }
                     } else {
                         (Target::Unresolved(c.target), Resolution::Unresolved)
                     }
@@ -256,8 +265,24 @@ impl RepositoryGraph {
             _ => None,
         }
     }
-    pub fn lookup(&self, query: &str, file: Option<&Path>) -> (&'static str, Vec<EntityId>) {
-        let (mode, _) = self.index.lookup(query);
+    #[cfg(test)]
+    fn lookup(&self, query: &str, file: Option<&Path>) -> (&'static str, Vec<EntityId>) {
+        self.lookup_bounded(query, file, MAX_QUERY_ROOTS + 1)
+    }
+    fn lookup_bounded(
+        &self,
+        query: &str,
+        file: Option<&Path>,
+        limit: usize,
+    ) -> (&'static str, Vec<EntityId>) {
+        // Determine match mode without allocating all Phase 1 matches.
+        let mode = if self.index.symbols.iter().any(|s| s.qualified_name == query) {
+            "qualified_name"
+        } else if self.index.symbols.iter().any(|s| s.name == query) {
+            "local_name"
+        } else {
+            "none"
+        };
         let offset = 1 + self.index.files.len();
         let roots = self
             .index
@@ -272,6 +297,7 @@ impl RepositoryGraph {
                 }) && file.is_none_or(|p| p == s.relative_path)
             })
             .map(|(i, _)| EntityId((offset + i) as u32))
+            .take(limit)
             .collect();
         (mode, roots)
     }
@@ -401,9 +427,11 @@ pub struct QueryResult {
     pub results: Vec<RootResult>,
     pub depth: u8,
     pub truncated: bool,
+    pub roots_truncated: bool,
 }
 #[derive(Clone, Copy)]
 struct TraversalLimits {
+    roots: usize,
     visited: usize,
     emitted: usize,
 }
@@ -421,6 +449,7 @@ impl RepositoryGraph {
             file,
             depth,
             TraversalLimits {
+                roots: MAX_QUERY_ROOTS,
                 visited: MAX_VISITED,
                 emitted: MAX_EMITTED,
             },
@@ -434,13 +463,16 @@ impl RepositoryGraph {
         depth: u8,
         limits: TraversalLimits,
     ) -> QueryResult {
-        let (match_mode, roots) = self.lookup(name, file);
+        let (match_mode, roots) = self.lookup_bounded(name, file, limits.roots.saturating_add(1));
+        let roots_truncated = roots.len() > limits.roots;
+        let roots = roots.into_iter().take(limits.roots).collect();
         let mut result = QueryResult {
             match_mode,
             roots,
             results: vec![],
             depth,
-            truncated: false,
+            truncated: roots_truncated,
+            roots_truncated,
         };
         let (mut total_entities, mut total_relations) = (0, 0);
         for &root in &result.roots {
@@ -558,6 +590,91 @@ mod tests {
         let (_, ids) = g.lookup(name, None);
         assert_eq!(ids.len(), 1);
         ids[0]
+    }
+    #[test]
+    fn root_limits_are_explicit_deterministic_and_file_filtered() {
+        let (_, g) = fixture(&[
+            ("a.py", "def f(): pass\ndef f(): pass\n"),
+            ("b.py", "def f(): pass\n"),
+        ]);
+        let query = |limit, file| {
+            g.query_with_limits(
+                QueryKind::Deps,
+                "f",
+                file,
+                0,
+                TraversalLimits {
+                    roots: limit,
+                    visited: 10,
+                    emitted: 10,
+                },
+            )
+        };
+        let exact = query(3, None);
+        assert!(!exact.truncated);
+        let over = query(2, None);
+        assert!(over.truncated && over.roots_truncated);
+        assert_eq!(over.roots, exact.roots[..2]);
+        assert_eq!(over.results.len(), 2);
+        assert!(over.results.iter().all(|r| !r.truncated));
+        let json = crate::output::graph_json("deps", &g, Some("f"), Some(&over)).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(json["data"]["roots_truncated"], true);
+        assert!(
+            crate::output::graph_human("deps", &g, Some("f"), Some(&over))
+                .contains("roots_truncated: true")
+        );
+        assert!(!query(2, Some(Path::new("a.py"))).truncated);
+        assert!(!g.query(QueryKind::Deps, "absent", None, 0).roots_truncated);
+    }
+    #[test]
+    fn rust_unqualified_method_and_nested_calls_remain_unresolved() {
+        let (_, g) = fixture(&[(
+            "a.rs",
+            "struct C; impl C { fn unique() {} } fn outer() { fn nested() {} unique(); C::unique(); nested(); helper(); } fn helper() {}",
+        )]);
+        for name in ["unique", "nested"] {
+            assert!(
+                g.relations
+                    .iter()
+                    .any(|r| r.target == Target::Unresolved(name.into()))
+            );
+        }
+        let callers = g.query(QueryKind::Callers, "C::unique", None, 1);
+        assert_eq!(callers.results[0].relations.len(), 1);
+    }
+    #[test]
+    fn aggregate_relation_text_counts_targets_aliases_and_repeated_paths() {
+        let (dir, g) = fixture(&[
+            ("a.py", "import outside as alias\n"),
+            ("b.py", "import outside as alias\n"),
+        ]);
+        // Each file has one containment path plus one candidate path, target and alias.
+        let bytes = 2 * (2 * "a.py".len() + "outside".len() + "alias".len());
+        let opts = IndexOptions {
+            root: dir.path().into(),
+            max_parse_file_bytes: DEFAULT_MAX_PARSE_BYTES,
+            probe_git: false,
+        };
+        let limits = GraphLimits {
+            entities: g.entities.len(),
+            relations: g.relations.len(),
+            text_bytes: bytes,
+        };
+        let (idx, files) = index::graph_analysis(&opts).unwrap();
+        assert!(construct(idx, files, limits).is_ok());
+        let (idx, files) = index::graph_analysis(&opts).unwrap();
+        assert!(matches!(
+            construct(
+                idx,
+                files,
+                GraphLimits {
+                    text_bytes: bytes - 1,
+                    ..limits
+                }
+            ),
+            Err(IndexError::GraphLimit)
+        ));
     }
     #[test]
     fn interval_owners_strict_shared_boundaries_and_overlap_defense() {
@@ -687,12 +804,7 @@ mod tests {
                 .any(|r| r.resolution == Resolution::ExactSameFileQualifiedName
                     && r.target == Target::Resolved(id(&g, "C.unique")))
         );
-        assert!(
-            refs.iter()
-                .any(|r| r.resolution == Resolution::UniqueSameFileLocalName
-                    && r.target == Target::Resolved(id(&g, "C.unique")))
-        );
-        for target in ["duplicate", "elsewhere", "B", "self.unique"] {
+        for target in ["unique", "duplicate", "elsewhere", "B", "self.unique"] {
             assert!(
                 refs.iter()
                     .any(|r| r.target == Target::Unresolved(target.into()))
@@ -754,6 +866,7 @@ mod tests {
             None,
             2,
             TraversalLimits {
+                roots: MAX_QUERY_ROOTS,
                 visited: 3,
                 emitted: 3,
             },
@@ -765,6 +878,7 @@ mod tests {
             None,
             2,
             TraversalLimits {
+                roots: MAX_QUERY_ROOTS,
                 visited: 2,
                 emitted: 3,
             },
@@ -776,6 +890,7 @@ mod tests {
             None,
             2,
             TraversalLimits {
+                roots: MAX_QUERY_ROOTS,
                 visited: 3,
                 emitted: 2,
             },
@@ -807,6 +922,7 @@ mod tests {
             crate::output::graph_json("graph", &again, None, None).unwrap()
         );
         let exact = GraphLimits {
+            text_bytes: MAX_RELATION_BYTES,
             entities: g.entities.len(),
             relations: g.relations.len(),
         };
@@ -835,6 +951,7 @@ mod tests {
             None,
             8,
             TraversalLimits {
+                roots: MAX_QUERY_ROOTS,
                 visited: 1,
                 emitted: 25,
             },
@@ -847,6 +964,7 @@ mod tests {
             None,
             8,
             TraversalLimits {
+                roots: MAX_QUERY_ROOTS,
                 visited: 10,
                 emitted: 0,
             },
@@ -858,6 +976,7 @@ mod tests {
             None,
             8,
             TraversalLimits {
+                roots: MAX_QUERY_ROOTS,
                 visited: 1,
                 emitted: 100,
             },

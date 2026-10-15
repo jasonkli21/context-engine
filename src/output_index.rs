@@ -205,11 +205,14 @@ pub fn json(
             })
             .collect(),
     };
-    serde_json::to_string_pretty(&Envelope {
-        schema_version: 1,
-        command: command.into(),
-        data,
-    })
+    super::bounded_json(
+        &Envelope {
+            schema_version: 1,
+            command: command.into(),
+            data,
+        },
+        super::MAX_JSON_BYTES,
+    )
 }
 pub fn human(command: &str, index: &RepositoryIndex, query: Option<&str>) -> String {
     let mut text = format!(

@@ -4,7 +4,7 @@
 
 **Active phase:** Phase 2 — Repository Relationship Graph
 
-**Overall status:** implemented and locally verified; independent Phase 2 review pending
+**Overall status:** Phase 2 review findings fixed and locally verified; independent final disposition pending
 
 ## Delivered
 
@@ -13,18 +13,21 @@
 - Fresh synchronous in-memory `graph`, `deps`, `callers` and `related` commands.
 - Explicit index-local repository/file/symbol IDs; lexical range containment;
   atomic Rust/Python import facts; conservative call-site reference facts.
-- Same-file exact-qualified/unique-local resolution, unresolved targets, separate
+- Conservative same-file exact-qualified resolution, unresolved targets, separate
   extraction/resolution evidence, occurrence-preserving relations and adjacency.
 - Cycle-safe iterative traversal, grouped exact-name roots, file filtering,
   bounded depth/results, explicit truncation and schema-v1 graph/query DTOs.
-- Independent fail-closed relation budgets and global graph safety ceilings;
+- Independent fail-closed relation budgets and hierarchical discovery/index/graph
+  text, record and output limits; explicit query root omission accounting;
   relation-file accounting alongside every file's Phase 1 analysis status.
 
 Evidence: [Phase 0 report](reports/phase-0-implementation-report.md),
 [Phase 1 report](reports/phase-1-implementation-report.md),
 [Phase 1 review-fix report](reports/phase-1-review-fix-report.md),
-[independent Phase 1 review](reviews/phase-1-independent-review.md), and
-[Phase 2 report](reports/phase-2-implementation-report.md).
+[independent Phase 1 review](reviews/phase-1-independent-review.md),
+[Phase 2 report](reports/phase-2-implementation-report.md),
+[independent Phase 2 review](reviews/phase-2-independent-review.md), and
+[Phase 2 review-fix report](reports/phase-2-review-fix-report.md).
 
 ## Acceptance and verification
 
@@ -34,16 +37,22 @@ Evidence: [Phase 0 report](reports/phase-0-implementation-report.md),
   disposition remains pending; authorization is not an independent acceptance.
 - Phase 2 baseline canonical verifier passed: 21 unit tests and 23 integration
   tests, using the existing isolated `/tmp` Rust toolchain and cached dependencies.
-- Phase 2 canonical verifier, all-target check, release build and release smoke
-  pass locally on aarch64 macOS: 32 unit and 31 integration tests, including all
+- Initial Phase 2 verifier, all-target check, release build and release smoke
+  passed locally on aarch64 macOS: 32 unit and 31 integration tests, including all
   unchanged Phase 0/1 regressions. Real Rust/Python repository observations are
   recorded in the Phase 2 report. Global toolchain setup unchanged.
-- No cloud/provider, cross-platform CI or independent Phase 2 verification claimed.
+- Independent Phase 2 static review found seven blocking findings; all are
+  addressed in the review-fix pass. Final canonical verifier passed with 41 unit
+  and 33 integration tests; all-target check, release build and 28 repository /
+  Rust-Python fixture smoke invocations passed locally.
+- No cloud/provider, cross-platform CI or independent executable verification
+  claimed. The independent review could not run the Rust toolchain.
 
 ## Known limitations
 
-Imports remain unresolved. Call-site references and same-file matches are syntax
-heuristics, not binding/type/dispatch or compiler guarantees. IDs are index-local
+Imports remain unresolved. Unqualified method/nested calls remain unresolved
+unless their syntax exactly matches a unique qualified name. Call-site references
+and same-file matches are syntax heuristics, not binding/type/dispatch or compiler guarantees. IDs are index-local
 and may renumber across edits. Graphs are rebuilt per command; no persistence,
 concurrency, async, MCP, embeddings, model calls or policy behavior exists.
 Relation budgets discard a failed file's extracted facts while retaining valid
@@ -54,5 +63,5 @@ remain; results are not atomic snapshots.
 
 ## Next step
 
-Independent Sol High Phase 2 review, followed by a separate review-fix pass if
-needed. Phase 2 has not been accepted merely because local verification passes.
+Independent final disposition of the Phase 2 review fixes. Phase 2 has not been
+accepted merely because local verification passes; Phase 3 is not started.
