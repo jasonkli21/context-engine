@@ -414,12 +414,15 @@ pub enum QueryKind {
     Deps,
     Callers,
     Related,
+    Neighborhood,
 }
 pub struct RootResult {
     pub root: EntityId,
     pub entities: Vec<EntityId>,
     pub relations: Vec<RelationId>,
     pub truncated: bool,
+    pub distances: BTreeMap<EntityId, u8>,
+    pub predecessors: BTreeMap<EntityId, (EntityId, RelationId)>,
 }
 pub struct QueryResult {
     pub match_mode: &'static str,
@@ -463,7 +466,20 @@ impl RepositoryGraph {
         depth: u8,
         limits: TraversalLimits,
     ) -> QueryResult {
-        let (match_mode, roots) = self.lookup_bounded(name, file, limits.roots.saturating_add(1));
+        let (match_mode, roots) = if kind == QueryKind::Neighborhood && file.is_some() {
+            (
+                "file_path",
+                self.index
+                    .files
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| Some(f.relative_path.as_path()) == file)
+                    .map(|(i, _)| EntityId((i + 1) as u32))
+                    .collect(),
+            )
+        } else {
+            self.lookup_bounded(name, file, limits.roots.saturating_add(1))
+        };
         let roots_truncated = roots.len() > limits.roots;
         let roots = roots.into_iter().take(limits.roots).collect();
         let mut result = QueryResult {
@@ -478,10 +494,13 @@ impl RepositoryGraph {
         for &root in &result.roots {
             let mut visited = BTreeSet::new();
             let mut emitted = BTreeSet::new();
+            let mut distances = BTreeMap::new();
+            let mut predecessors = BTreeMap::new();
             let mut queue = VecDeque::new();
             let mut truncated = depth > MAX_DEPTH;
             if total_entities < limits.visited {
                 visited.insert(root);
+                distances.insert(root, 0);
                 total_entities += 1;
                 queue.push_back((root, 0));
             } else {
@@ -515,6 +534,9 @@ impl RepositoryGraph {
                                 )
                         }
                         QueryKind::Related => true,
+                        QueryKind::Neighborhood => {
+                            r.source != EntityId(0) && (r.kind != RelationKind::Imports || forward)
+                        }
                     };
                     if !eligible || emitted.contains(&id) {
                         continue;
@@ -539,6 +561,8 @@ impl RepositoryGraph {
                     total_relations += 1;
                     if let Some(next) = next.filter(|n| !visited.contains(n)) {
                         visited.insert(next);
+                        distances.insert(next, distance + 1);
+                        predecessors.insert(next, (entity, id));
                         total_entities += 1;
                         queue.push_back((next, distance + 1));
                     }
@@ -548,6 +572,8 @@ impl RepositoryGraph {
             result.results.push(RootResult {
                 root,
                 entities: visited.into_iter().collect(),
+                distances,
+                predecessors,
                 relations: emitted.into_iter().collect(),
                 truncated,
             });
@@ -590,6 +616,42 @@ mod tests {
         let (_, ids) = g.lookup(name, None);
         assert_eq!(ids.len(), 1);
         ids[0]
+    }
+    #[test]
+    fn neighborhood_shares_exact_and_over_traversal_budgets() {
+        let (_, g) = fixture(&[
+            ("a.py", "def f(): f()\ndef f(): pass\n"),
+            ("b.py", "def f(): pass\n"),
+        ]);
+        let run = |roots, visited, emitted, depth| {
+            g.query_with_limits(
+                QueryKind::Neighborhood,
+                "f",
+                None,
+                depth,
+                TraversalLimits {
+                    roots,
+                    visited,
+                    emitted,
+                },
+            )
+        };
+        let full = run(3, 100, 100, 8);
+        assert!(!full.truncated);
+        let entities = full.results.iter().map(|r| r.entities.len()).sum();
+        let relations = full.results.iter().map(|r| r.relations.len()).sum();
+        assert!(!run(3, entities, relations, 8).truncated);
+        assert!(run(3, entities - 1, relations, 8).truncated);
+        assert!(run(3, entities, relations - 1, 8).truncated);
+        assert!(!run(3, 3, 0, 0).truncated);
+        let limited = run(2, 100, 100, 8);
+        assert!(limited.roots_truncated && limited.truncated);
+        assert_eq!(limited.roots, full.roots[..2]);
+        assert!(
+            full.results
+                .iter()
+                .all(|r| !r.entities.contains(&EntityId(0)))
+        );
     }
     #[test]
     fn root_limits_are_explicit_deterministic_and_file_filtered() {

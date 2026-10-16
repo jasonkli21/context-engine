@@ -9,24 +9,30 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 #[derive(Serialize)]
-struct EntityDto<'a> {
+pub(super) struct EntityDto<'a> {
     id: u32,
     kind: &'static str,
     path: Option<String>,
     symbol: Option<SymbolDto<'a>>,
 }
-fn entity(g: &RepositoryGraph, id: EntityId) -> EntityDto<'_> {
-    let (kind, path, symbol) = match g.entities[id.0 as usize] {
+pub(super) fn entity(g: &RepositoryGraph, id: EntityId) -> EntityDto<'_> {
+    index_entity(&g.index, id)
+}
+pub(super) fn index_entity(index: &crate::model::RepositoryIndex, id: EntityId) -> EntityDto<'_> {
+    let entity = if id.0 == 0 {
+        Entity::Repository
+    } else if id.0 as usize <= index.files.len() {
+        Entity::File(id.0 as usize - 1)
+    } else {
+        Entity::Symbol(id.0 as usize - 1 - index.files.len())
+    };
+    let (kind, path, symbol) = match entity {
         Entity::Repository => ("repository", None, None),
-        Entity::File(i) => (
-            "file",
-            Some(relative(&g.index.files[i].relative_path)),
-            None,
-        ),
+        Entity::File(i) => ("file", Some(relative(&index.files[i].relative_path)), None),
         Entity::Symbol(i) => (
             "symbol",
-            Some(relative(&g.index.symbols[i].relative_path)),
-            Some(SymbolDto::from(&g.index.symbols[i])),
+            Some(relative(&index.symbols[i].relative_path)),
+            Some(SymbolDto::from(&index.symbols[i])),
         ),
     };
     EntityDto {
@@ -62,7 +68,7 @@ struct EvidenceDto {
     derivation: &'static str,
 }
 #[derive(Serialize)]
-struct RelationDto<'a> {
+pub(super) struct RelationDto<'a> {
     id: u32,
     kind: &'static str,
     source_id: u32,
@@ -71,7 +77,7 @@ struct RelationDto<'a> {
     metadata: MetadataDto<'a>,
     evidence: EvidenceDto,
 }
-fn relation(g: &RepositoryGraph, id: RelationId) -> RelationDto<'_> {
+pub(super) fn relation(g: &RepositoryGraph, id: RelationId) -> RelationDto<'_> {
     let r = &g.relations[id.0 as usize];
     RelationDto {
         id: id.0,
@@ -297,7 +303,7 @@ pub fn json<'a>(
         MAX_JSON_BYTES,
     )
 }
-fn label(g: &RepositoryGraph, id: EntityId) -> String {
+pub(super) fn label(g: &RepositoryGraph, id: EntityId) -> String {
     if let Some(s) = g.symbol(id) {
         format!(
             "{} ({}:{})",

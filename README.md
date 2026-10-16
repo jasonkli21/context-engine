@@ -12,10 +12,11 @@ The project is intentionally **descriptive rather than normative**. It aims to m
 
 ## Status
 
-**Pre-alpha / Phase 2 implemented; independent Phase 2 review pending.**
+**Pre-alpha / Phase 3 implemented; independent review pending.**
 The synchronous CLI scans repositories, indexes Rust/Python symbols, and builds a
 fresh in-memory graph of lexical containment, imports and call-site references.
-The maintainer authorized Phase 2 despite pending final Phase 1 acceptance.
+The maintainer authorized Phase 3 from the Phase 2 review-fix baseline; final
+independent Phase 1/2 dispositions remain pending.
 Phase 0 was accepted on 2026-10-14. Persistence, async, MCP, embeddings and model
 calls remain future work.
 
@@ -41,6 +42,10 @@ cargo build --release
 ./target/release/ctx deps construct . --depth 2
 ./target/release/ctx callers construct .
 ./target/release/ctx related construct . --file src/graph.rs
+./target/release/ctx search graph . --kind all --limit 20
+./target/release/ctx neighborhood --symbol RepositoryGraph . --depth 2
+./target/release/ctx neighborhood --file src/graph.rs . --format json
+./target/release/ctx hotspots . --limit 10
 ```
 
 All commands default to the current directory and accept `--format human|json`.
@@ -49,6 +54,43 @@ All commands default to the current directory and accept `--format human|json`.
 `stats` adds per-language byte and line totals; `tree` lists alphabetically ordered
 relative paths, with `/` suffixes for directories. Tree does not read file contents
 or probe Git. Help and version: `ctx --help`, `ctx scan --help`, `ctx --version`.
+
+### Query and repository intelligence
+
+`search <QUERY> [PATH]` searches case-sensitive relative file paths and symbol
+qualified/local names through the index alone. It does not search source bodies.
+`--kind all|symbol|file` defaults to `all`; `--limit` defaults to 20 and accepts
+1–200. Queries must contain 1–4096 UTF-8 bytes. Match tiers, strongest first:
+exact qualified symbol, exact local symbol, exact file path; then qualified/local/
+file prefix; then qualified/local/file substring. Each entity appears once with
+its strongest reason; ties use canonical file/symbol order. Zero matches succeed.
+
+`neighborhood (--symbol NAME | --file RELATIVE_PATH) [PATH]` requires exactly one
+selector. Symbols use exact qualified-first/local-fallback lookup, including
+multiple roots. File paths are exact scan-root-relative identities without `.` or
+`..` components. `--depth` defaults to 1 and accepts 0–8. Traversal follows lexical
+file/symbol containment and references in both directions, with unresolved outgoing
+facts as leaves. Repository containment edges are excluded, preventing unrelated
+files from entering through the repository hub. JSON visits carry shortest BFS
+distance plus predecessor entity/relation IDs within each root group. Budgets are
+shared across groups: 128 roots, 10,000 entity visits, 25,000 relation occurrences.
+
+`hotspots [PATH]` ranks **structural activity in the current graph**, with separate
+central-symbol and file lists. `--limit` defaults to 20, maximum 200 for each list.
+Central symbols rank by distinct fan-in, incoming occurrence count, distinct
+fan-out, outgoing occurrence count descending, then canonical symbol order.
+Files rank by structural activity, resolved incoming+outgoing occurrences,
+unresolved references+imports, symbol count descending, then canonical path.
+Activity counts a non-containment occurrence once per associated file; a same-file
+reference contributes to both incoming and outgoing totals. Zero-evidence entries
+are omitted. Unresolved facts never contribute to resolved fan-in/fan-out.
+
+All three commands expose explicit truncation and schema-v1 JSON through the
+shared 64 MiB output ceiling. Neighborhood candidate test associations identify
+only reached test-role entities (including a test-role root), with predecessor and
+relation evidence. They are structural candidates, not coverage claims. Current
+same-file-only resolution means cross-file associations are generally absent.
+No history, semantic ranking, new resolution, or persistence is introduced.
 
 ### Scan semantics
 

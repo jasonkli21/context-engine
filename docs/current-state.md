@@ -1,12 +1,18 @@
 # Current state
 
-**Last updated:** 2026-10-14
+**Last updated:** 2026-10-15
 
-**Active phase:** Phase 2 — Repository Relationship Graph
+**Active phase:** Phase 3 — Query and Repository Intelligence
 
-**Overall status:** Phase 2 review findings fixed and locally verified; independent final disposition pending
+**Overall status:** Phase 3 implemented and locally verified; independent review pending
 
 ## Delivered
+
+- Phase 3 index-only deterministic path/symbol `search`, generalized bounded
+  `neighborhood` with per-root distances/predecessor evidence and repository-hub
+  exclusion, and current-graph structural `hotspots` with distinct fan-in/out.
+- Conservative reached test-role candidate associations; explicit ranking tuples,
+  result/root/traversal truncation, escaped human and bounded schema-v1 JSON.
 
 - Phase 0 scanner and Phase 1 Rust/Python symbol indexing remain intact, including
   bounded loading, fail-closed symbol budgets and deterministic schema-v1 output.
@@ -21,7 +27,8 @@
   text, record and output limits; explicit query root omission accounting;
   relation-file accounting alongside every file's Phase 1 analysis status.
 
-Evidence: [Phase 0 report](reports/phase-0-implementation-report.md),
+Evidence: [Phase 3 report](reports/phase-3-implementation-report.md),
+[Phase 0 report](reports/phase-0-implementation-report.md),
 [Phase 1 report](reports/phase-1-implementation-report.md),
 [Phase 1 review-fix report](reports/phase-1-review-fix-report.md),
 [independent Phase 1 review](reviews/phase-1-independent-review.md),
@@ -30,6 +37,14 @@ Evidence: [Phase 0 report](reports/phase-0-implementation-report.md),
 [Phase 2 review-fix report](reports/phase-2-review-fix-report.md).
 
 ## Acceptance and verification
+
+- The maintainer explicitly authorized Phase 3 from `09efd22` while final
+  independent Phase 1/2 dispositions remain pending. This is not acceptance.
+- Phase 3 baseline verifier passed (41 unit / 33 integration). Final canonical
+  verifier passed (43 unit / 37 integration), all-target check and release build
+  passed, with 20 human/JSON release smoke invocations against this repository
+  and the real sibling Python Context Integrity repository. The existing isolated
+  macOS Rust toolchain was reused; no global setup changed.
 
 - Phase 0 was accepted by the user on 2026-10-14 with independent re-review waived.
 - The user explicitly authorized Phase 2 despite Phase 1's remaining final
@@ -63,5 +78,6 @@ remain; results are not atomic snapshots.
 
 ## Next step
 
-Independent final disposition of the Phase 2 review fixes. Phase 2 has not been
-accepted merely because local verification passes; Phase 3 is not started.
+Fresh independent Sol High review of Phase 3, followed by any findings/fixes and
+final disposition. Phase 1/2 final independent disposition also remains pending.
+Local verification does not constitute independent acceptance of any phase.

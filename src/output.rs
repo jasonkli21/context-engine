@@ -416,3 +416,6 @@ fn bounded_json(value: &impl Serialize, limit: usize) -> Result<String, serde_js
     // serde_json emits UTF-8 only.
     Ok(String::from_utf8(buffer.bytes).expect("JSON is UTF-8"))
 }
+
+#[path = "output_query.rs"]
+pub mod query;

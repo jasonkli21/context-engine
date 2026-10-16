@@ -17,6 +17,12 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Search file paths and symbol names (case-sensitive metadata search).
+    Search(SearchArgs),
+    /// Explore local syntax evidence without crossing the repository containment hub.
+    Neighborhood(NeighborhoodArgs),
+    /// Rank structural activity and central symbols in the current graph.
+    Hotspots(HotspotArgs),
     /// Build a fresh in-memory repository relationship graph (syntax evidence).
     Graph(AnalysisArgs),
     /// Traverse best-effort outgoing call-site references and unresolved facts.
@@ -103,4 +109,49 @@ pub struct GraphQueryArgs {
     /// Narrow name matches to this scan-root-relative file path.
     #[arg(long)]
     pub file: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct SearchArgs {
+    pub query: String,
+    #[command(flatten)]
+    pub analysis: AnalysisArgs,
+    #[arg(long, value_enum, default_value = "all")]
+    pub kind: SearchKindArg,
+    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u16).range(1..=200))]
+    pub limit: u16,
+}
+#[derive(Debug, Args)]
+pub struct HotspotArgs {
+    #[command(flatten)]
+    pub analysis: AnalysisArgs,
+    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u16).range(1..=200))]
+    pub limit: u16,
+}
+#[derive(Debug, Args)]
+pub struct NeighborhoodArgs {
+    #[arg(long, required_unless_present = "file", conflicts_with = "file")]
+    pub symbol: Option<String>,
+    #[arg(long, required_unless_present = "symbol")]
+    pub file: Option<PathBuf>,
+    #[command(flatten)]
+    pub analysis: AnalysisArgs,
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(0..=8))]
+    pub depth: u8,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum SearchKindArg {
+    All,
+    Symbol,
+    File,
+}
+impl From<SearchKindArg> for crate::query::SearchKind {
+    fn from(kind: SearchKindArg) -> Self {
+        match kind {
+            SearchKindArg::All => Self::All,
+            SearchKindArg::Symbol => Self::Symbol,
+            SearchKindArg::File => Self::File,
+        }
+    }
 }

@@ -6,6 +6,7 @@ mod index;
 mod language;
 mod model;
 mod output;
+mod query;
 mod relations;
 mod scan;
 mod source;
@@ -23,6 +24,9 @@ use std::{
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let rendered = match cli.command {
+        Command::Search(args) => search_command(args)?,
+        Command::Neighborhood(args) => neighborhood_command(args)?,
+        Command::Hotspots(args) => hotspots_command(args)?,
         Command::Graph(args) => graph_command("graph", args, None)?,
         Command::Deps(args) => graph_query("deps", args)?,
         Command::Callers(args) => graph_query("callers", args)?,
@@ -109,6 +113,62 @@ fn graph_command(
     Ok(match args.format {
         Format::Human => output::graph_human(command, &graph, query.map(|q| q.0), result.as_ref()),
         Format::Json => output::graph_json(command, &graph, query.map(|q| q.0), result.as_ref())?,
+    })
+}
+
+fn options(args: &cli::AnalysisArgs) -> model::IndexOptions {
+    model::IndexOptions {
+        root: args.path.clone(),
+        max_parse_file_bytes: args.max_parse_file_size,
+        probe_git: true,
+    }
+}
+fn search_command(args: cli::SearchArgs) -> Result<String, Box<dyn std::error::Error>> {
+    query::validate_query(&args.query)?;
+    let index = index::index_repository(&options(&args.analysis))?;
+    let result = query::search(&index, &args.query, args.kind.into(), args.limit as usize)?;
+    Ok(match args.analysis.format {
+        Format::Human => output::query::search_human(&index, &args.query, &result),
+        Format::Json => output::query::search_json(&index, &args.query, args.kind.into(), &result)?,
+    })
+}
+fn neighborhood_command(args: cli::NeighborhoodArgs) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(file) = &args.file
+        && (file.as_os_str().is_empty()
+            || file
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_))))
+    {
+        return Err(
+            "file selector must be an exact scan-root-relative path without . or .. components"
+                .into(),
+        );
+    }
+    let selector = args
+        .symbol
+        .as_deref()
+        .map(str::to_owned)
+        .unwrap_or_else(|| args.file.as_ref().unwrap().to_string_lossy().into_owned());
+    let g = graph::build(&options(&args.analysis))?;
+    let result = g.query(
+        graph::QueryKind::Neighborhood,
+        &selector,
+        args.file.as_deref(),
+        args.depth,
+    );
+    Ok(match args.analysis.format {
+        Format::Human => output::query::neighborhood_human(&g, &selector, &result),
+        Format::Json => {
+            output::query::neighborhood_json(&g, &selector, args.file.is_some(), &result)?
+        }
+    })
+}
+fn hotspots_command(args: cli::HotspotArgs) -> Result<String, Box<dyn std::error::Error>> {
+    let g = graph::build(&options(&args.analysis))?;
+    let result = query::hotspots(&g, args.limit as usize)?;
+    Ok(match args.analysis.format {
+        Format::Human => output::query::hotspots_human(&g, &result),
+        Format::Json => output::query::hotspots_json(&g, &result)?,
     })
 }
 
