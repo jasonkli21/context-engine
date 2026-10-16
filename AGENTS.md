@@ -32,6 +32,10 @@ Use `docs/README.md` to route other task types.
 - Prefer a plain struct/function/module before a trait, framework, service, or new crate.
 - Do not execute analyzed repository code as part of scanning/indexing.
 - Keep machine-readable contracts explicitly versioned once exposed.
+- When scanner/classification, language analysis, relation extraction, or persisted
+  enum semantics change, review and bump `INDEX_COMPAT_VERSION` so unchanged source
+  cannot reuse semantically stale cached analysis. Store layout changes use the
+  `SCHEMA_VERSION` constant and rebuild incompatible derivative caches.
 - Unsupported/uncertain evidence must be represented honestly rather than guessed.
 - No `unsafe` without measured need, documented rationale, and review.
 

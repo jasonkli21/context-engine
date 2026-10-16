@@ -4,6 +4,8 @@ use crate::{
 };
 use std::path::{Path, PathBuf};
 
+// Bump when scanner/classifier, Rust/Python analysis, relation extraction, or
+// persisted enum semantics change. Keep this rule adjacent to the version gate.
 pub const INDEX_COMPAT_VERSION: i64 = 1;
 pub const FINGERPRINT_VERSION: &str = "freshness-v1";
 const MAX_FRESHNESS_BYTES: u64 = 256 * 1024 * 1024;
@@ -149,14 +151,39 @@ fn load_with<F>(
     options: &IndexOptions,
     force: bool,
     test_path: Option<&Path>,
-    mut build: F,
+    build: F,
 ) -> Result<AnalysisArtifact, CacheError>
 where
     F: FnMut(RepositoryScan) -> Result<AnalysisArtifact, CacheError>,
 {
+    load_with_fingerprint(options, force, test_path, build, fingerprint)
+}
+fn warn_unverified() {
+    eprintln!(
+        "ctx: warning: source freshness could not be established; returning uncached best-effort analysis"
+    );
+}
+fn load_with_fingerprint<F, H>(
+    options: &IndexOptions,
+    force: bool,
+    test_path: Option<&Path>,
+    mut build: F,
+    mut fingerprint_fn: H,
+) -> Result<AnalysisArtifact, CacheError>
+where
+    F: FnMut(RepositoryScan) -> Result<AnalysisArtifact, CacheError>,
+    H: FnMut(&RepositoryScan, u64) -> Result<[u8; 32], CacheError>,
+{
     for attempt in 0..2 {
         let before = scan_now(options)?;
-        let stamp = fingerprint(&before, options.max_parse_file_bytes)?;
+        let stamp = match fingerprint_fn(&before, options.max_parse_file_bytes) {
+            Ok(stamp) => stamp,
+            Err(CacheError::Freshness) if !force => {
+                warn_unverified();
+                return build(before);
+            }
+            Err(error) => return Err(error),
+        };
         let path = test_path
             .map(|p| Ok(p.to_path_buf()))
             .unwrap_or_else(|| location(&before.root, options.max_parse_file_bytes));
@@ -173,10 +200,21 @@ where
             .iter()
             .any(|f| f.status == AnalysisStatus::ReadFailed)
         {
-            return Err(CacheError::Freshness);
+            if force {
+                return Err(CacheError::Freshness);
+            }
+            warn_unverified();
+            return Ok(artifact);
         }
         let after = scan_now(options)?;
-        let post = fingerprint(&after, options.max_parse_file_bytes)?;
+        let post = match fingerprint_fn(&after, options.max_parse_file_bytes) {
+            Ok(stamp) => stamp,
+            Err(CacheError::Freshness) if !force => {
+                warn_unverified();
+                return Ok(artifact);
+            }
+            Err(error) => return Err(error),
+        };
         if post != stamp || after.root != artifact.index.root {
             if attempt == 0 {
                 continue;
@@ -345,5 +383,133 @@ mod tests {
         })
         .unwrap();
         assert_eq!(n, 2);
+    }
+    #[test]
+    fn automatic_read_failure_returns_uncached_best_effort_analysis() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("good.py"), "def available(): pass\n").unwrap();
+        std::fs::write(root.path().join("unreadable.py"), "def hidden(): pass\n").unwrap();
+        let opts = options(root.path());
+        let path = cache.path().join("cache.sqlite3");
+        let artifact = load_with_fingerprint(
+            &opts,
+            false,
+            Some(&path),
+            |scan| {
+                let mut artifact = build(scan)?;
+                let failed = artifact
+                    .index
+                    .files
+                    .iter_mut()
+                    .find(|f| f.relative_path == Path::new("unreadable.py"))
+                    .unwrap();
+                failed.status = AnalysisStatus::ReadFailed;
+                failed.symbol_count = 0;
+                artifact
+                    .index
+                    .symbols
+                    .retain(|s| s.relative_path != Path::new("unreadable.py"));
+                Ok(artifact)
+            },
+            |_, _| Err(CacheError::Freshness),
+        )
+        .unwrap();
+        assert!(artifact.index.symbols.iter().any(|s| s.name == "available"));
+        assert_eq!(
+            artifact
+                .index
+                .files
+                .iter()
+                .find(|f| f.relative_path == Path::new("unreadable.py"))
+                .unwrap()
+                .status,
+            AnalysisStatus::ReadFailed
+        );
+        let json = crate::output::index_json("symbols", &artifact.index, None).unwrap();
+        serde_json::from_str::<serde_json::Value>(&json).unwrap();
+        assert!(!path.exists());
+        assert!(matches!(
+            load_with_fingerprint(&opts, true, Some(&path), build, |_, _| Err(
+                CacheError::Freshness
+            )),
+            Err(CacheError::Freshness)
+        ));
+        assert!(!path.exists());
+    }
+    #[test]
+    fn incompatible_analysis_version_rebuilds_the_derived_cache() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("a.py"), "def current(): pass\n").unwrap();
+        let opts = options(root.path());
+        let path = cache.path().join("cache.sqlite3");
+        load_with(&opts, false, Some(&path), build).unwrap();
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute("UPDATE meta SET compat=compat+1", [])
+            .unwrap();
+        let mut builds = 0;
+        load_with(&opts, false, Some(&path), |scan| {
+            builds += 1;
+            build(scan)
+        })
+        .unwrap();
+        assert_eq!(builds, 1);
+        let compat: i64 = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT compat FROM meta", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(compat, INDEX_COMPAT_VERSION);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn real_non_utf8_source_path_survives_cold_and_warm_persistence() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let root = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let native_name = std::ffi::OsString::from_vec(b"native-\xff.py".to_vec());
+        let creation = std::fs::write(
+            root.path().join(&native_name),
+            "def native_symbol(): pass\n",
+        );
+        if let Err(error) = creation {
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::InvalidInput
+            ) {
+                return;
+            }
+            panic!("failed to create native path fixture: {error}");
+        }
+        let opts = options(root.path());
+        let path = cache.path().join("cache.sqlite3");
+        let cold = load_with(&opts, false, Some(&path), build).unwrap();
+        let warm = load_with(&opts, false, Some(&path), |_| {
+            panic!("warm load reparsed source")
+        })
+        .unwrap();
+        let cold_path = cold
+            .index
+            .files
+            .iter()
+            .find(|f| f.relative_path.as_os_str().as_bytes() == native_name.as_bytes())
+            .unwrap();
+        let warm_path = warm
+            .index
+            .files
+            .iter()
+            .find(|f| f.relative_path.as_os_str().as_bytes() == native_name.as_bytes())
+            .unwrap();
+        assert_eq!(cold_path.relative_path, warm_path.relative_path);
+        assert!(
+            warm.index
+                .symbols
+                .iter()
+                .any(
+                    |s| s.relative_path.as_os_str().as_bytes() == native_name.as_bytes()
+                        && s.name == "native_symbol"
+                )
+        );
     }
 }

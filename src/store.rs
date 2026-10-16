@@ -1,4 +1,4 @@
-//! SQLite schema-v1. Native paths live in BLOB columns; each structural record
+//! SQLite schema-v2. Native paths live in BLOB columns; each structural record
 //! has an explicit named JSON codec. No graph IDs, operational metadata or bodies.
 use crate::{
     model::*,
@@ -8,15 +8,16 @@ use crate::{
 use rusqlite::{Connection, OpenFlags, params};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Component, Path, PathBuf},
     time::Duration,
 };
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 const MAX_DB_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_PAYLOAD_BYTES: i64 = 32 * 1024 * 1024;
 const MAX_ROW_BYTES: usize = 1024 * 1024;
+const ARTIFACT_INTEGRITY_VERSION: &str = "blake3-rows-v1";
 #[cfg(unix)]
 pub const PATH_CODEC: &str = "unix_bytes_v1";
 #[cfg(windows)]
@@ -39,6 +40,16 @@ pub enum StoreError {
     Codec(#[from] serde_json::Error),
 }
 type Result<T> = std::result::Result<T, StoreError>;
+struct CacheMetadata {
+    compat: i64,
+    fingerprint: String,
+    codec: String,
+    root: Vec<u8>,
+    limit: String,
+    stamp: Vec<u8>,
+    integrity_version: String,
+    artifact_digest: Vec<u8>,
+}
 #[cfg(unix)]
 pub fn native_bytes(path: &Path) -> Vec<u8> {
     use std::os::unix::ffi::OsStrExt;
@@ -133,6 +144,67 @@ fn preflight_with_limit(conn: &Connection, max_payload: i64) -> Result<()> {
     }
     Ok(())
 }
+fn file_id(path: &Path) -> i64 {
+    let digest = blake3::hash(&native_bytes(path));
+    i64::from_le_bytes(digest.as_bytes()[..8].try_into().unwrap()) & i64::MAX
+}
+fn digest_field(hash: &mut blake3::Hasher, bytes: &[u8]) {
+    hash.update(&(bytes.len() as u64).to_le_bytes());
+    hash.update(bytes);
+}
+fn artifact_digest(conn: &Connection) -> Result<Vec<u8>> {
+    let mut hash = blake3::Hasher::new();
+    digest_field(&mut hash, ARTIFACT_INTEGRITY_VERSION.as_bytes());
+    for (table, query) in [
+        ("files", "SELECT id,path,payload FROM files ORDER BY id"),
+        (
+            "symbols",
+            "SELECT file,ordinal,payload FROM symbols ORDER BY file,ordinal",
+        ),
+        (
+            "diagnostics",
+            "SELECT file,ordinal,payload FROM diagnostics ORDER BY file,ordinal",
+        ),
+        (
+            "extractions",
+            "SELECT file,payload FROM extractions ORDER BY file",
+        ),
+        (
+            "candidates",
+            "SELECT file,ordinal,payload FROM candidates ORDER BY file,ordinal",
+        ),
+    ] {
+        digest_field(&mut hash, table.as_bytes());
+        let mut stmt = conn.prepare(query)?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let columns = match table {
+                "files" => 3,
+                "extractions" => 2,
+                _ => 3,
+            };
+            for col in 0..columns {
+                if col == columns - 1 {
+                    let blob = row
+                        .get_ref(col)?
+                        .as_blob()
+                        .map_err(|_| StoreError::Invalid)?;
+                    digest_field(&mut hash, blob);
+                } else if table == "files" && col == 1 {
+                    let blob = row
+                        .get_ref(col)?
+                        .as_blob()
+                        .map_err(|_| StoreError::Invalid)?;
+                    digest_field(&mut hash, blob);
+                } else {
+                    let value: i64 = row.get(col)?;
+                    digest_field(&mut hash, &value.to_le_bytes());
+                }
+            }
+        }
+    }
+    Ok(hash.finalize().as_bytes().to_vec())
+}
 pub fn save(path: &Path, artifact: &AnalysisArtifact, max: u64, stamp: &[u8; 32]) -> Result<()> {
     std::fs::create_dir_all(path.parent().ok_or(StoreError::Invalid)?)?;
     // Build a complete replacement beside the destination. Failed writes leave
@@ -143,54 +215,57 @@ pub fn save(path: &Path, artifact: &AnalysisArtifact, max: u64, stamp: &[u8; 32]
         setup(&conn)?;
         conn.execute_batch("PRAGMA max_page_count=32768; PRAGMA page_size=4096;")?;
         let tx = conn.transaction()?;
-        tx.execute_batch("PRAGMA user_version=1;
-            CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK(id=1), compat INTEGER NOT NULL, fingerprint_version TEXT NOT NULL, codec TEXT NOT NULL, root BLOB NOT NULL, parse_limit TEXT NOT NULL, stamp BLOB NOT NULL);
-            CREATE TABLE files (ordinal INTEGER PRIMARY KEY, path BLOB NOT NULL UNIQUE, payload BLOB NOT NULL);
-            CREATE TABLE symbols (ordinal INTEGER PRIMARY KEY, file INTEGER NOT NULL REFERENCES files(ordinal), payload BLOB NOT NULL);
-            CREATE TABLE diagnostics (ordinal INTEGER PRIMARY KEY, file INTEGER NOT NULL REFERENCES files(ordinal), payload BLOB NOT NULL);
-            CREATE TABLE extractions (ordinal INTEGER PRIMARY KEY REFERENCES files(ordinal), payload BLOB NOT NULL);
-            CREATE TABLE candidates (ordinal INTEGER PRIMARY KEY, file INTEGER NOT NULL REFERENCES extractions(ordinal), payload BLOB NOT NULL);")?;
+        tx.execute_batch(&format!("PRAGMA user_version={SCHEMA_VERSION};
+            CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK(id=1), compat INTEGER NOT NULL, fingerprint_version TEXT NOT NULL, codec TEXT NOT NULL, root BLOB NOT NULL, parse_limit TEXT NOT NULL, stamp BLOB NOT NULL, integrity_version TEXT NOT NULL, artifact_digest BLOB NOT NULL);
+            CREATE TABLE files (id INTEGER PRIMARY KEY, path BLOB NOT NULL UNIQUE, payload BLOB NOT NULL);
+            CREATE TABLE symbols (file INTEGER NOT NULL REFERENCES files(id), ordinal INTEGER NOT NULL, payload BLOB NOT NULL, PRIMARY KEY(file,ordinal));
+            CREATE TABLE diagnostics (file INTEGER NOT NULL REFERENCES files(id), ordinal INTEGER NOT NULL, payload BLOB NOT NULL, PRIMARY KEY(file,ordinal));
+            CREATE TABLE extractions (file INTEGER PRIMARY KEY REFERENCES files(id), payload BLOB NOT NULL);
+            CREATE TABLE candidates (file INTEGER NOT NULL REFERENCES extractions(file), ordinal INTEGER NOT NULL, payload BLOB NOT NULL, PRIMARY KEY(file,ordinal));"))?;
         tx.execute(
-            "INSERT INTO meta VALUES(1,?1,?2,?3,?4,?5,?6)",
+            "INSERT INTO meta VALUES(1,?1,?2,?3,?4,?5,?6,?7,?8)",
             params![
                 INDEX_COMPAT_VERSION,
                 FINGERPRINT_VERSION,
                 PATH_CODEC,
                 native_bytes(&artifact.index.root),
                 max.to_string(),
-                stamp.as_slice()
+                stamp.as_slice(),
+                ARTIFACT_INTEGRITY_VERSION,
+                Vec::<u8>::new()
             ],
         )?;
         let mut ids = BTreeMap::new();
-        for (ordinal, file) in artifact.index.files.iter().enumerate() {
-            let ordinal = i64::try_from(ordinal).map_err(|_| StoreError::Invalid)?;
-            ids.insert(file.relative_path.as_path(), ordinal);
+        let mut used_ids = BTreeSet::new();
+        for file in &artifact.index.files {
+            let id = file_id(&file.relative_path);
+            if !used_ids.insert(id) {
+                return Err(StoreError::Invalid);
+            }
+            ids.insert(file.relative_path.as_path(), id);
             tx.execute(
                 "INSERT INTO files VALUES(?1,?2,?3)",
-                params![ordinal, native_bytes(&file.relative_path), encode(file)?],
+                params![id, native_bytes(&file.relative_path), encode(file)?],
             )?;
         }
-        for (ordinal, symbol) in artifact.index.symbols.iter().enumerate() {
-            insert(
-                &tx,
-                "symbols",
-                ordinal,
-                *ids.get(symbol.relative_path.as_path())
-                    .ok_or(StoreError::Invalid)?,
-                symbol,
-            )?;
+        let mut ordinals = BTreeMap::<i64, i64>::new();
+        for symbol in &artifact.index.symbols {
+            let file = *ids
+                .get(symbol.relative_path.as_path())
+                .ok_or(StoreError::Invalid)?;
+            let ordinal = ordinals.entry(file).or_default();
+            insert(&tx, "symbols", *ordinal as usize, file, symbol)?;
+            *ordinal += 1;
         }
-        for (ordinal, diagnostic) in artifact.index.diagnostics.iter().enumerate() {
-            insert(
-                &tx,
-                "diagnostics",
-                ordinal,
-                *ids.get(diagnostic.relative_path.as_path())
-                    .ok_or(StoreError::Invalid)?,
-                diagnostic,
-            )?;
+        ordinals.clear();
+        for diagnostic in &artifact.index.diagnostics {
+            let file = *ids
+                .get(diagnostic.relative_path.as_path())
+                .ok_or(StoreError::Invalid)?;
+            let ordinal = ordinals.entry(file).or_default();
+            insert(&tx, "diagnostics", *ordinal as usize, file, diagnostic)?;
+            *ordinal += 1;
         }
-        let mut ordinal = 0;
         for file in &artifact.relation_files {
             let id = *ids
                 .get(file.relative_path.as_path())
@@ -202,12 +277,13 @@ pub fn save(path: &Path, artifact: &AnalysisArtifact, max: u64, stamp: &[u8; 32]
                     encode(&(file.extraction.status, file.extraction.unsupported))?
                 ],
             )?;
-            for candidate in &file.extraction.candidates {
+            for (ordinal, candidate) in file.extraction.candidates.iter().enumerate() {
                 insert(&tx, "candidates", ordinal, id, candidate)?;
-                ordinal += 1;
             }
         }
         preflight(&tx)?;
+        let digest = artifact_digest(&tx)?;
+        tx.execute("UPDATE meta SET artifact_digest=?1 WHERE id=1", [digest])?;
         tx.commit()?;
     }
     temp.as_file().sync_all()?;
@@ -224,7 +300,7 @@ fn insert(
     let ordinal = i64::try_from(ordinal).map_err(|_| StoreError::Invalid)?;
     conn.execute(
         &format!("INSERT INTO {table} VALUES(?1,?2,?3)"),
-        params![ordinal, file, encode(value)?],
+        params![file, ordinal, encode(value)?],
     )?;
     Ok(())
 }
@@ -252,69 +328,78 @@ pub fn load(
     if version != SCHEMA_VERSION {
         return Err(StoreError::Incompatible);
     }
-    let (compat, fingerprint, codec, root, limit, saved): (
-        i64,
-        String,
-        String,
-        Vec<u8>,
-        String,
-        Vec<u8>,
-    ) = tx.query_row(
-        "SELECT compat,fingerprint_version,codec,root,parse_limit,stamp FROM meta WHERE id=1",
+    let metadata: CacheMetadata = tx.query_row(
+        "SELECT compat,fingerprint_version,codec,root,parse_limit,stamp,integrity_version,artifact_digest FROM meta WHERE id=1",
         [],
         |r| {
-            Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                r.get(3)?,
-                r.get(4)?,
-                r.get(5)?,
-            ))
+            Ok(CacheMetadata {
+                compat: r.get(0)?,
+                fingerprint: r.get(1)?,
+                codec: r.get(2)?,
+                root: r.get(3)?,
+                limit: r.get(4)?,
+                stamp: r.get(5)?,
+                integrity_version: r.get(6)?,
+                artifact_digest: r.get(7)?,
+            })
         },
     )?;
-    if compat != INDEX_COMPAT_VERSION
-        || fingerprint != FINGERPRINT_VERSION
-        || codec != PATH_CODEC
-        || root != native_bytes(&scan.root)
-        || limit != max.to_string()
+    if metadata.compat != INDEX_COMPAT_VERSION
+        || metadata.fingerprint != FINGERPRINT_VERSION
+        || metadata.codec != PATH_CODEC
+        || metadata.root != native_bytes(&scan.root)
+        || metadata.limit != max.to_string()
     {
         return Err(StoreError::Incompatible);
     }
-    if saved != stamp {
+    if metadata.stamp != stamp {
         return Err(StoreError::Stale);
     }
     preflight(&tx)?;
+    if metadata.integrity_version != ARTIFACT_INTEGRITY_VERSION
+        || artifact_digest(&tx)? != metadata.artifact_digest
+    {
+        return Err(StoreError::Invalid);
+    }
     let mut check = tx.prepare("PRAGMA foreign_key_check")?;
     if check.query([])?.next()?.is_some() {
         return Err(StoreError::Invalid);
     }
-    let mut files = Vec::new();
-    let mut statement = tx.prepare("SELECT ordinal,path,payload FROM files ORDER BY ordinal")?;
+    let current_ids: BTreeMap<_, _> = scan
+        .files
+        .iter()
+        .enumerate()
+        .map(|(i, file)| (file.relative_path.as_path(), i))
+        .collect();
+    let mut files: Vec<Option<FileAnalysis>> = std::iter::repeat_with(|| None)
+        .take(scan.files.len())
+        .collect();
+    let mut storage_ids = BTreeMap::new();
+    let mut statement = tx.prepare("SELECT id,path,payload FROM files ORDER BY path")?;
     let mut rows = statement.query([])?;
     while let Some(row) = rows.next()? {
-        let ordinal: usize =
-            usize::try_from(row.get::<_, i64>(0)?).map_err(|_| StoreError::Invalid)?;
-        if ordinal != files.len() {
-            return Err(StoreError::Invalid);
-        }
+        let id: i64 = row.get(0)?;
         let path = native_path(row.get(1)?)?;
         let mut file: FileAnalysis =
             decode(row.get_ref(2)?.as_blob().map_err(|_| StoreError::Invalid)?)?;
-        let current = scan.files.get(ordinal).ok_or(StoreError::Invalid)?;
+        let ordinal = *current_ids.get(path.as_path()).ok_or(StoreError::Invalid)?;
+        let current = &scan.files[ordinal];
         if !valid_path(&path)
-            || path != current.relative_path
+            || id != file_id(&path)
             || file.language != current.language
             || file.role != current.role
+            || files[ordinal].is_some()
         {
             return Err(StoreError::Invalid);
         }
         file.relative_path = path;
-        files.push(file);
+        storage_ids.insert(id, ordinal);
+        files[ordinal] = Some(file);
     }
-    if files.len() != scan.files.len() {
+    if files.iter().any(Option::is_none) {
         return Err(StoreError::Invalid);
     }
+    let files: Vec<FileAnalysis> = files.into_iter().map(Option::unwrap).collect();
     let mut index = RepositoryIndex {
         root: scan.root.clone(),
         git: None,
@@ -326,7 +411,7 @@ pub fn load(
     let mut symbol_counts = vec![0usize; index.files.len()];
     let mut names = 0usize;
     let mut details = 0usize;
-    read_records(&tx, "symbols", |id, bytes| {
+    read_records(&tx, "symbols", &storage_ids, |id, bytes| {
         let file = index.files.get(id).ok_or(StoreError::Invalid)?;
         let mut s: Symbol = decode(bytes)?;
         if s.language != file.language || file.status != AnalysisStatus::Analyzed {
@@ -359,7 +444,7 @@ pub fn load(
     {
         return Err(StoreError::Invalid);
     }
-    read_records(&tx, "diagnostics", |id, bytes| {
+    read_records(&tx, "diagnostics", &storage_ids, |id, bytes| {
         let mut d: AnalysisDiagnostic = decode(bytes)?;
         d.relative_path = index
             .files
@@ -380,10 +465,11 @@ pub fn load(
         Ok(())
     })?;
     let mut extractions = BTreeMap::new();
-    let mut statement = tx.prepare("SELECT ordinal,payload FROM extractions ORDER BY ordinal")?;
+    let mut statement = tx.prepare("SELECT file,payload FROM extractions ORDER BY file")?;
     let mut rows = statement.query([])?;
     while let Some(row) = rows.next()? {
-        let id: usize = usize::try_from(row.get::<_, i64>(0)?).map_err(|_| StoreError::Invalid)?;
+        let storage_id: i64 = row.get(0)?;
+        let id = *storage_ids.get(&storage_id).ok_or(StoreError::Invalid)?;
         if index.files.get(id).ok_or(StoreError::Invalid)?.status != AnalysisStatus::Analyzed {
             return Err(StoreError::Invalid);
         }
@@ -420,7 +506,7 @@ pub fn load(
             .map(|s| s.relative_path.as_os_str().len())
             .sum::<usize>();
     let mut relation_count = index.files.len() + index.symbols.len();
-    read_records(&tx, "candidates", |id, bytes| {
+    read_records(&tx, "candidates", &storage_ids, |id, bytes| {
         let c: Candidate = decode(bytes)?;
         validate_range(
             c.range,
@@ -489,22 +575,30 @@ pub fn load(
 fn read_records(
     conn: &Connection,
     table: &str,
+    storage_ids: &BTreeMap<i64, usize>,
     mut consume: impl FnMut(usize, &[u8]) -> Result<()>,
 ) -> Result<()> {
     let mut statement = conn.prepare(&format!(
-        "SELECT ordinal,file,payload FROM {table} ORDER BY ordinal"
+        "SELECT file,ordinal,payload FROM {table} ORDER BY file,ordinal"
     ))?;
     let mut rows = statement.query([])?;
+    let mut active_file = None;
     let mut expected = 0usize;
     while let Some(row) = rows.next()? {
+        let storage_id: i64 = row.get(0)?;
         let ordinal: usize =
-            usize::try_from(row.get::<_, i64>(0)?).map_err(|_| StoreError::Invalid)?;
+            usize::try_from(row.get::<_, i64>(1)?).map_err(|_| StoreError::Invalid)?;
+        if active_file != Some(storage_id) {
+            active_file = Some(storage_id);
+            expected = 0;
+        }
         if ordinal != expected {
             return Err(StoreError::Invalid);
         }
         expected += 1;
+        let file = *storage_ids.get(&storage_id).ok_or(StoreError::Invalid)?;
         consume(
-            usize::try_from(row.get::<_, i64>(1)?).map_err(|_| StoreError::Invalid)?,
+            file,
             row.get_ref(2)?.as_blob().map_err(|_| StoreError::Invalid)?,
         )?;
     }
@@ -560,6 +654,13 @@ mod tests {
         let (scan, mut artifact) = fixture(root.path());
         let path = cache.path().join("cache.sqlite3");
         save(&path, &artifact, 1024, &[1; 32]).unwrap();
+        assert_eq!(
+            Connection::open(&path)
+                .unwrap()
+                .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
         let warm = load(&path, &scan, 1024, &[1; 32]).unwrap();
         assert_eq!(
             crate::output::index_json("index", &artifact.index, None).unwrap(),
@@ -605,13 +706,14 @@ mod tests {
         let (scan, artifact) = fixture(root.path());
         let path = cache.path().join("cache.sqlite3");
         for sql in [
+            "PRAGMA user_version=1",
             "PRAGMA user_version=9",
             "UPDATE meta SET codec='unknown'",
             "UPDATE meta SET compat=99",
             "UPDATE files SET payload=replace(cast(payload as text),'analyzed','future_status')",
             "UPDATE symbols SET ordinal=999 WHERE ordinal=0",
             "UPDATE symbols SET file=999 WHERE ordinal=0",
-            "UPDATE files SET path=x'2e2e2f612e7079' WHERE ordinal=1",
+            "UPDATE files SET path=x'2e2e2f612e7079' WHERE path=x'612e7079'",
             "UPDATE symbols SET payload=replace(cast(payload as text),'function','mystery')",
             "UPDATE symbols SET payload=json_set(cast(payload as text),'$.range.end.byte',999999) WHERE ordinal=0",
             "DELETE FROM extractions",
@@ -646,6 +748,107 @@ mod tests {
             .unwrap();
         assert!(matches!(
             load(&path, &scan, 1024, &[1; 32]),
+            Err(StoreError::Invalid)
+        ));
+    }
+    #[test]
+    fn file_keys_and_child_ordinals_are_file_local() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let db = cache.path().join("cache.sqlite3");
+        let (_scan, artifact) = fixture(root.path());
+        save(&db, &artifact, 1024, &[1; 32]).unwrap();
+        let conn = Connection::open(&db).unwrap();
+        let path_bytes = native_bytes(Path::new("a.py"));
+        let original_id: i64 = conn
+            .query_row("SELECT id FROM files WHERE path=?1", [path_bytes], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let original_ordinals: Vec<i64> = {
+            let mut s = conn
+                .prepare("SELECT ordinal FROM symbols WHERE file=?1 ORDER BY ordinal")
+                .unwrap();
+            s.query_map([original_id], |r| r.get(0))
+                .unwrap()
+                .map(|result| result.unwrap())
+                .collect()
+        };
+        drop(conn);
+        std::fs::write(root.path().join("0.py"), "def earlier(): pass\n").unwrap();
+        let scan2 = crate::scan::scan_repository(&ScanOptions {
+            root: root.path().into(),
+            count_lines: false,
+            max_line_count_file_bytes: 0,
+            probe_git: false,
+        })
+        .unwrap();
+        let (index, relation_files) = crate::index::analyze_scan(
+            crate::scan::scan_repository(&ScanOptions {
+                root: root.path().into(),
+                count_lines: false,
+                max_line_count_file_bytes: 0,
+                probe_git: false,
+            })
+            .unwrap(),
+            1024,
+            true,
+        )
+        .unwrap();
+        save(
+            &db,
+            &AnalysisArtifact {
+                index,
+                relation_files,
+            },
+            1024,
+            &[2; 32],
+        )
+        .unwrap();
+        let conn = Connection::open(&db).unwrap();
+        let added_id: i64 = conn
+            .query_row(
+                "SELECT id FROM files WHERE path=?1",
+                [native_bytes(Path::new("a.py"))],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let ordinals: Vec<i64> = {
+            let mut s = conn
+                .prepare("SELECT ordinal FROM symbols WHERE file=?1 ORDER BY ordinal")
+                .unwrap();
+            s.query_map([added_id], |r| r.get(0))
+                .unwrap()
+                .map(|result| result.unwrap())
+                .collect()
+        };
+        assert_eq!(added_id, original_id);
+        assert_eq!(ordinals, original_ordinals);
+        let loaded = load(&db, &scan2, 1024, &[2; 32]).unwrap();
+        assert_eq!(loaded.index.files[0].relative_path, Path::new("0.py"));
+        assert_eq!(loaded.index.files[1].relative_path, Path::new("Makefile"));
+        assert_eq!(loaded.index.files[2].relative_path, Path::new("a.py"));
+    }
+    #[test]
+    fn valid_json_payload_mutation_fails_artifact_integrity() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let (scan, artifact) = fixture(root.path());
+        let db = cache.path().join("cache.sqlite3");
+        save(&db, &artifact, 1024, &[1; 32]).unwrap();
+        let conn = Connection::open(&db).unwrap();
+        let changed = conn.execute(
+            "UPDATE symbols SET payload=CAST(replace(cast(payload as text),'one','forged') AS BLOB) WHERE ordinal=0",
+                [],
+            )
+            .unwrap();
+        assert_eq!(changed, 1);
+        let saved_digest: Vec<u8> = conn
+            .query_row("SELECT artifact_digest FROM meta", [], |r| r.get(0))
+            .unwrap();
+        assert_ne!(artifact_digest(&conn).unwrap(), saved_digest);
+        assert!(matches!(
+            load(&db, &scan, 1024, &[1; 32]),
             Err(StoreError::Invalid)
         ));
     }

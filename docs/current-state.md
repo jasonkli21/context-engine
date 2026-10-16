@@ -12,14 +12,15 @@
   diagnostics and parser-extracted relation candidates. All current intelligence
   consumers share validated full-analysis reuse; graphs reconstruct through the
   existing constructor. `index` forces rebuild and requires a committed cache.
-- Schema v1 / analysis compatibility v1 / `freshness-v1` validate native root/path
+- Schema v2 / analysis compatibility v1 / `freshness-v1` validate native root/path
   identities, options, current inventory and eligible Rust/Python bytes. Pre/post
   build validation retries once on mutation. Corrupt/incompatible stores rebuild;
   automatic write failures warn on stderr while explicit indexing fails.
 - No source bodies or graph IDs are stored. Caches stay outside the analyzed root.
   Scan/stats/tree remain live; diff/impact remain committed-revision analyses.
   `context --change` retains its snapshot gates. Phase 7 incremental updates remain
-  future work. Evidence: [Phase 6 report](reports/phase-6-implementation-report.md).
+  future work. Evidence: [Phase 6 report](reports/phase-6-implementation-report.md)
+  and [Phase 6 review-fix report](reports/phase-6-review-fix-report.md).
 
 - Phase 5 `context [PATH] --task TASK --budget BYTES` assembles deterministic
   full-file UTF-8 bundles with contract-tested `file-ranker-v1` scores/reasons,
@@ -73,7 +74,8 @@
 
 - Phase 0 scanner and Phase 1 Rust/Python symbol indexing remain intact, including
   bounded loading, fail-closed symbol budgets and deterministic schema-v1 output.
-- Fresh synchronous in-memory `graph`, `deps`, `callers` and `related` commands.
+- Synchronous `graph`, `deps`, `callers` and `related` commands reconstruct the
+  in-memory graph from validated cached analysis or the current analysis build.
 - Explicit index-local repository/file/symbol IDs; lexical range containment;
   atomic Rust/Python import facts; conservative call-site reference facts.
 - Conservative same-file exact-qualified resolution, unresolved targets, separate
@@ -109,6 +111,11 @@ Evidence: [Phase 5 review-fix report](reports/phase-5-review-fix-report.md),
   command equivalence, mutation retry, storage validation/rollback, source edits,
   corruption recovery, clean Git `--change` and dirty rejection were exercised.
   No cloud, cross-platform or independent executable verification is claimed.
+- The independent Phase 6 review findings have been addressed in a single follow-up:
+  schema-v2 file-local storage keys, derived-payload integrity checking, best-effort
+  automatic fallback on freshness read failures, compatibility guardrails, and the
+  native-path/documentation gaps. Canonical verification for this follow-up is
+  recorded in the [review-fix report](reports/phase-6-review-fix-report.md).
 
 - The maintainer explicitly authorized Phase 5 from `4579d5b` despite pending
   Phase 4 fresh re-review and earlier final dispositions; this is not acceptance.
@@ -176,8 +183,10 @@ Evidence: [Phase 5 review-fix report](reports/phase-5-review-fix-report.md),
 
 Phase 6 still scans and reads eligible source bytes on each request. Freshness
 reserves at most 256 MiB per pass; stores have additional size/record limits.
-Unreadable eligible source fails freshness. No incremental indexing, cache GC or
-atomic filesystem snapshot exists. Windows/native-wide support is implemented but
+If source freshness cannot be established, automatic current-state queries bypass
+the cache and return best-effort analysis with per-file `ReadFailed` status; explicit
+`index` fails and incomplete results are never persisted. No incremental indexing,
+cache GC or atomic filesystem snapshot exists. Windows/native-wide support is implemented but
 not locally executed; non-UTF-8 store tests use injected native inventory records.
 
 Phase 5 packs complete files under a byte budget, not tokens/snippets. With

@@ -12,14 +12,13 @@ The project is intentionally **descriptive rather than normative**. It aims to m
 
 ## Status
 
-**Pre-alpha / Phase 5 implemented; independent review pending.**
+**Pre-alpha / Phase 6 implemented; review findings addressed, fresh independent re-review pending.**
 The synchronous CLI scans repositories, indexes Rust/Python symbols, and builds a
 canonical in-memory graph of lexical containment, imports and call-site references,
-reusing a validated external analysis cache.
-The maintainer authorized Phase 5 from the Phase 4 review-fix baseline; final
-independent Phase 1/2/3/4 dispositions remain pending.
-Phase 0 was accepted on 2026-10-14. Persistence, async, MCP, embeddings and model
-calls remain future work.
+reusing a validated external analysis cache after a fresh inventory/freshness check.
+Phase 6 review findings have been addressed in a single follow-up commit; independent
+re-review and earlier pending phase dispositions remain pending. Phase 0 was accepted
+on 2026-10-14. Async, MCP, embeddings and model calls remain future work.
 
 See [`docs/current-state.md`](docs/current-state.md) for implementation and review status.
 
@@ -56,8 +55,10 @@ cargo build --release
 
 All commands default to the current directory and accept `--format human|json`.
 `scan` and `stats` also accept `--no-lines` and `--max-line-file-size <bytes>`
-(default 1 MiB). Current-state commands perform a fresh scan; revision commands
-read immutable Git objects. `scan` shows an overview;
+(default 1 MiB). Current-state intelligence commands perform a fresh inventory and
+source-freshness validation, then reuse parser/extraction analysis on a valid cache
+hit and reconstruct graph state in memory. Revision commands read immutable Git
+objects. `scan` shows an overview;
 `stats` adds per-language byte and line totals; `tree` lists alphabetically ordered
 relative paths, with `/` suffixes for directories. Tree does not read file contents
 or probe Git. Help and version: `ctx --help`, `ctx scan --help`, `ctx --version`.
@@ -328,16 +329,20 @@ The default location is `<platform-cache>/context-engine/indexes/<key>.sqlite3`.
 Set `CONTEXT_ENGINE_CACHE_DIR=/absolute/external/path` to override the cache base
 (the database remains under `indexes/`). Paths beneath the analyzed root are
 rejected before creation. The key uses lossless canonical root bytes and the parse
-file limit. Schema v1, analysis compatibility v1 and `freshness-v1` are explicit.
+file limit. Schema v2, analysis compatibility v1 and `freshness-v1` are explicit.
+Path-derived storage keys and per-file ordinals keep unrelated file rows stable.
+A versioned BLAKE3 digest detects changes to the exact persisted structural rows.
 Only structural analysis is stored: file records, symbols, diagnostics and relation
 candidates. No source bodies, graph IDs, adjacency or query/ranking results are saved.
 
 Every hit scans current inventory and hashes eligible Rust/Python source bytes;
 same-length edits invalidate it. Generated/vendor and over-limit source bodies
 are excluded, but inventory paths, classifications and sizes are fingerprinted.
-Freshness reads reserve at most 256 MiB including growth probes. Unreadable eligible
-source fails freshness. Rebuilds compare pre/post inventories and hashes and retry
-once on change; a second change fails without replacement. Store reads enforce
+Freshness reads reserve at most 256 MiB including growth probes. When freshness
+cannot be established, automatic commands bypass the cache and return best-effort
+analysis with per-file failures reported; explicit `index` fails. Incomplete results
+are not persisted. Rebuilds compare pre/post inventories and hashes and retry once
+on change; a second change fails without replacement. Store reads enforce
 128 MiB database, 32 MiB encoded payload and existing structural aggregate limits.
 Git metadata and scan warnings stay live. Filesystem results remain non-atomic.
 Phase 7 file-level incremental indexing and watchers remain future work.

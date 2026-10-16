@@ -532,7 +532,7 @@ Persistence is a later concern and should be selected from real query patterns r
 
 Phase 6 stores the established `RepositoryIndex` structural records plus per-file
 `FileRelations` extraction. `persistence.rs` owns freshness and load/build
-composition; `store.rs` owns SQLite schema v1 and record codecs. Graph commands
+composition; `store.rs` owns SQLite schema v2 and record codecs. Graph commands
 always reconstruct through `graph::from_analysis`. No graph IDs, adjacency, query
 results, ranking results or source bodies are persisted. Rendering has no storage
 or discovery dependency.
@@ -541,10 +541,16 @@ SQLite uses bundled `rusqlite`, foreign keys, a two-second busy timeout, bounded
 record reads and transactional replacement. A complete sibling temporary database
 is committed and synced before atomic replacement; failed writes preserve the
 prior committed artifact. Incompatible/corrupt databases rebuild without migration.
-Schema v1, `INDEX_COMPAT_VERSION=1` and `freshness-v1` are separate contracts.
+Schema v2, `INDEX_COMPAT_VERSION=1` and `freshness-v1` are separate contracts.
 Stable named JSON records occupy normalized file/symbol/diagnostic/extraction/
 candidate rows; paths are BLOBs with `unix_bytes_v1` or `windows_wide_le_v1`.
-Ordinals are internal serialization positions, never stable graph identity.
+File storage keys derive from the native relative path and child ordinals restart
+within each file, so unrelated inventory positions or child counts do not renumber
+other rows. These keys are internal and never graph identity. A versioned BLAKE3
+artifact digest covers the ordered storage keys, native paths, associations and exact
+encoded payload bytes. It detects cache-byte corruption separately from source
+freshness; it is not an authenticity mechanism against a process that can rewrite
+both the database and digest.
 
 The external platform user cache is overridden by `CONTEXT_ENGINE_CACHE_DIR`.
 The locator hashes native canonical root identity, path codec and parse limit;
@@ -554,7 +560,9 @@ fingerprint includes native paths, language, role and sizes plus raw eligible
 Rust/Python bytes (generated/vendor and over-limit bodies excluded). Reads use the
 safe bounded loader; Unix opens each component relative to held directory handles
 with no-follow flags. Freshness reserves at most 256 MiB per pass. Unknown
-freshness fails closed. Cold builds validate again and retry at most once on
+freshness fails closed for cache reuse. Automatic queries then return bounded
+best-effort analysis, preserving per-file `ReadFailed` status, and do not persist
+that result; explicit `index` fails. Cold builds validate again and retry at most once on
 mutation, without persisting a known mixed snapshot. Live filesystem operations
 still do not promise atomic snapshots. Git metadata/warnings come from current scans.
 
@@ -564,8 +572,10 @@ return fresh results; scan/stats/tree and committed diff/impact remain separate.
 Store limits include 128 MiB DB, 32 MiB encoded structural payload, 1 MiB per
 record, and existing file/path/symbol/name/detail/relation ceilings.
 
-Phase 7 can replace file-scoped rows, re-extract affected analysis and reconstruct
-the same graph. Phase 6 does not implement incremental updates, event loops,
+Schema v2 gives Phase 7 a file-local row replacement seam: path-derived file keys
+and per-file child ordinals let it replace one file's analysis and dependent
+candidates without renumbering unrelated records, then reconstruct the same graph.
+Phase 6 does not implement incremental updates, event loops,
 watchers, concurrency, historical caches, full-text search or service protocols.
 
 ---
