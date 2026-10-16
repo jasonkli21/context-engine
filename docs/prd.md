@@ -1465,8 +1465,9 @@ Learning Rust is an explicit project requirement.
 | 5 | Context ranking | algorithms, scoring, testing |
 | 6 | Persistence | Serde, SQLite/embedded storage, migrations/versioning |
 | 7 | Incremental updates | channels, threads, `Arc`, synchronization |
-| 8 | Local daemon/API | Tokio/async, networking/IPC |
-| 9+ | Scale | profiling, allocations, parallelism, caching |
+| 8 | History and evolution | Git history modeling, temporal data |
+| 9 | Local service and agent adapter | Tokio/async, networking/IPC |
+| 10+ | Scale | profiling, allocations, parallelism, caching |
 
 ---
 

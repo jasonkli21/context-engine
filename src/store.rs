@@ -13,6 +13,28 @@ use std::{
     time::Duration,
 };
 
+/// Serializes every writer that can replace or patch one canonical cache path.
+/// The sidecar SQLite reservation is portable across the platforms we support,
+/// released automatically when the owning process exits, and bounded by the
+/// normal two-second SQLite busy timeout.
+pub struct CacheWriteLock(Connection);
+impl Drop for CacheWriteLock {
+    fn drop(&mut self) {
+        let _ = self.0.execute_batch("ROLLBACK;");
+    }
+}
+
+pub fn lock_writers(path: &Path) -> Result<CacheWriteLock> {
+    let parent = path.parent().ok_or(StoreError::Invalid)?;
+    std::fs::create_dir_all(parent)?;
+    let mut sidecar = path.as_os_str().to_os_string();
+    sidecar.push(".writer-lock");
+    let conn = Connection::open(PathBuf::from(sidecar))?;
+    setup(&conn)?;
+    conn.execute_batch("BEGIN IMMEDIATE;")?;
+    Ok(CacheWriteLock(conn))
+}
+
 pub const SCHEMA_VERSION: i64 = 3;
 const MAX_DB_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_PAYLOAD_BYTES: i64 = 32 * 1024 * 1024;
@@ -230,7 +252,19 @@ fn artifact_digest(conn: &Connection) -> Result<Vec<u8>> {
     }
     Ok(hash.finalize().as_bytes().to_vec())
 }
-pub fn save_snapshot(
+#[cfg(test)]
+pub(crate) fn save_snapshot(
+    path: &Path,
+    artifact: &AnalysisArtifact,
+    max: u64,
+    stamp: &[u8; 32],
+    inputs: &Inputs,
+) -> Result<()> {
+    let _lock = lock_writers(path)?;
+    save_snapshot_locked(path, artifact, max, stamp, inputs)
+}
+
+pub(crate) fn save_snapshot_locked(
     path: &Path,
     artifact: &AnalysisArtifact,
     max: u64,
@@ -244,7 +278,8 @@ pub fn save_snapshot(
     {
         let mut conn = Connection::open(temp.path())?;
         setup(&conn)?;
-        conn.execute_batch("PRAGMA max_page_count=32768; PRAGMA page_size=4096;")?;
+        conn.execute_batch("PRAGMA page_size=4096;")?;
+        set_page_limit(&conn)?;
         let tx = conn.transaction()?;
         tx.execute_batch(&format!("PRAGMA user_version={SCHEMA_VERSION};
             CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK(id=1), compat INTEGER NOT NULL, fingerprint_version TEXT NOT NULL, codec TEXT NOT NULL, root BLOB NOT NULL, parse_limit TEXT NOT NULL, stamp BLOB NOT NULL, integrity_version TEXT NOT NULL, artifact_digest BLOB NOT NULL);
@@ -376,6 +411,7 @@ pub fn load_snapshot(path: &Path, root: &Path, max: u64) -> Result<Snapshot> {
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     setup(&conn)?;
+    validate_db_geometry(&conn)?;
     let tx = conn.transaction()?;
     read_snapshot(&tx, root, max)
 }
@@ -610,7 +646,8 @@ fn read_snapshot(tx: &Connection, root: &Path, max: u64) -> Result<Snapshot> {
 
 /// Compare-and-swap a trusted snapshot under a SQLite write reservation. Only
 /// changed/deleted ownership groups are touched; any error rolls the transaction back.
-pub fn patch(
+#[cfg(test)]
+pub(crate) fn patch(
     path: &Path,
     expected: &[u8; 32],
     artifact: &AnalysisArtifact,
@@ -618,12 +655,29 @@ pub fn patch(
     stamp: &[u8; 32],
     inputs: &Inputs,
 ) -> Result<()> {
+    let _lock = lock_writers(path)?;
+    patch_locked(path, expected, artifact, max, stamp, inputs)
+}
+
+pub(crate) fn patch_locked(
+    path: &Path,
+    expected: &[u8; 32],
+    artifact: &AnalysisArtifact,
+    max: u64,
+    stamp: &[u8; 32],
+    inputs: &Inputs,
+) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.is_file() || metadata.len() > MAX_DB_BYTES {
+        return Err(StoreError::Invalid);
+    }
     let mut conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     setup(&conn)?;
-    conn.execute_batch("PRAGMA max_page_count=32768;")?;
+    validate_db_geometry(&conn)?;
+    set_page_limit(&conn)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let old = read_snapshot(&tx, &artifact.index.root, max)?;
     if &old.generation != expected {
@@ -652,8 +706,53 @@ pub fn patch(
         params![stamp.as_slice(), artifact_digest(&tx)?],
     )?;
     read_snapshot(&tx, &artifact.index.root, max)?;
+    validate_db_geometry(&tx)?;
     tx.commit()?;
+    let final_size = std::fs::symlink_metadata(path)?.len();
+    if final_size > MAX_DB_BYTES {
+        return Err(StoreError::Invalid);
+    }
     Ok(())
+}
+
+fn db_geometry(conn: &Connection) -> Result<(u64, u64)> {
+    let page_size: i64 = conn.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+    let page_count: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+    if page_size <= 0 || page_count < 0 {
+        return Err(StoreError::Invalid);
+    }
+    let page_size = page_size as u64;
+    let page_count = page_count as u64;
+    if page_count
+        .checked_mul(page_size)
+        .ok_or(StoreError::Invalid)?
+        > MAX_DB_BYTES
+    {
+        return Err(StoreError::Invalid);
+    }
+    Ok((page_size, page_count))
+}
+fn validate_db_geometry(conn: &Connection) -> Result<()> {
+    db_geometry(conn).map(|_| ())
+}
+fn set_page_limit(conn: &Connection) -> Result<()> {
+    let (page_size, _) = db_geometry(conn)?;
+    let max_pages = max_pages_for(page_size)?;
+    conn.query_row(
+        &format!("PRAGMA max_page_count={max_pages}"),
+        [],
+        |_| Ok(()),
+    )?;
+    Ok(())
+}
+fn max_pages_for(page_size: u64) -> Result<u64> {
+    if page_size == 0 {
+        return Err(StoreError::Invalid);
+    }
+    let max_pages = MAX_DB_BYTES / page_size;
+    (max_pages > 0)
+        .then_some(max_pages)
+        .ok_or(StoreError::Invalid)
 }
 
 #[cfg(test)]
@@ -837,6 +936,60 @@ mod tests {
                 decode::<Metadata>(&encode(&metadata).unwrap()).unwrap()
             );
         }
+    }
+
+    #[test]
+    fn all_writer_modes_share_bounded_path_locking() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let (_scan, artifact) = fixture(root.path());
+        let path = cache.path().join("cache.sqlite3");
+        let first = lock_writers(&path).unwrap();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let path2 = path.clone();
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                let result = save(&path2, &artifact, 1024, &[7; 32]);
+                let _ = done_tx.send(result.is_ok());
+            });
+            assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+            drop(first);
+            assert!(done_rx.recv_timeout(Duration::from_secs(3)).unwrap());
+            worker.join().unwrap();
+        });
+        assert!(load_snapshot(&path, &artifact.index.root, 1024).is_ok());
+    }
+
+    #[test]
+    fn patch_respects_physical_limit_with_noncanonical_page_size() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let (_scan, mut artifact) = fixture(root.path());
+        let path = cache.path().join("cache.sqlite3");
+        save(&path, &artifact, 1024, &[1; 32]).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA page_size=8192; VACUUM;")
+            .unwrap();
+        let (page_size, _) = db_geometry(&conn).unwrap();
+        assert_eq!(page_size, 8192);
+        drop(conn);
+        let snapshot = load_snapshot(&path, &artifact.index.root, 1024).unwrap();
+        artifact.index.symbols[0].name = "updated".into();
+        let mut inputs = snapshot.inputs;
+        inputs.values_mut().next().unwrap().stamp = [2; 32];
+        let generation = crate::persistence::generation(&inputs, 1024);
+        patch(
+            &path,
+            &snapshot.generation,
+            &artifact,
+            1024,
+            &generation,
+            &inputs,
+        )
+        .unwrap();
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(max_pages_for(8192).unwrap(), MAX_DB_BYTES / 8192);
+        assert!(db_geometry(&conn).unwrap().0 * db_geometry(&conn).unwrap().1 <= MAX_DB_BYTES);
     }
     #[test]
     fn reject_versions_unknown_codecs_ordinals_foreign_keys_ranges_and_limits() {

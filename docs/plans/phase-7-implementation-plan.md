@@ -476,6 +476,12 @@ Retain the existing safe full-store replacement path for:
 
 Incremental mutation is an optimization over a trusted cache generation, not the only recovery mechanism.
 
+Every writer of one canonical cache path, including full replacement and incremental
+patching, must also take the same bounded per-cache path reservation. Revalidate the
+candidate's complete source input set while holding that reservation and keep it
+through commit/replacement. SQLite generation compare-and-swap remains necessary for
+incremental base validation but does not coordinate a replaced database pathname.
+
 ### 8.6 No cache compaction requirement
 
 SQLite page reuse/fragmentation and cache GC are not Phase 7 product scope. Continue enforcing the DB ceiling. If repeated churn can eventually require a full rebuild because the store reaches a bound, document that rather than adding a maintenance subsystem.
@@ -872,7 +878,12 @@ Rules:
 - no source body is stored in SQLite;
 - native non-UTF-8 relative paths remain lossless internally.
 
-If adding `notify`, configure recursive watching of the intended root but avoid depending on platform-specific event names for correctness.
+If adding `notify`, configure recursive watching of the intended root and also
+monitor parent directories for the `.gitignore` and `.ignore` controls the scanner
+consults outside a nested root. Filter unrelated parent activity, but use matching
+events only as wakeup hints; canonical scanning remains authoritative. Do not depend
+on platform-specific event names for correctness. Include a bounded periodic full
+reconciliation as a safety net for parent-control event gaps and backend event loss.
 
 Repository `.git/` activity may be filtered as an operational optimization because it is outside the indexed inventory and Git metadata is not persisted; ordinary repository-path events must not be over-filtered in ways that miss ignore or classification changes.
 

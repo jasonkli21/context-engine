@@ -563,7 +563,9 @@ safe bounded loader; Unix opens each component relative to held directory handle
 with no-follow flags. Freshness reserves at most 256 MiB per pass. Unknown
 freshness fails closed for cache reuse. Automatic queries then return bounded
 best-effort analysis, preserving per-file `ReadFailed` status, and do not persist
-that result; explicit `index` fails. Full/incremental builds validate the entire input set again and retry at most once on
+that result; explicit `index` fails. If an analyzer read fails after snapshot units
+have been retained, automatic reconciliation discards the merged candidate and
+rebuilds from a fresh live scan. Full/incremental builds validate the entire input set again and retry at most once on
 mutation, without persisting a known mixed snapshot. Live filesystem operations
 still do not promise atomic snapshots. Git metadata/warnings come from current scans.
 
@@ -592,22 +594,31 @@ generation is checked against the canonical per-file stamps. Only a trusted snap
 can supply retained units. Path/stamp equality retains evidence; additions/changes
 reanalyze, deletions disappear and renames are delete-plus-add.
 
-`store::patch` takes a SQLite IMMEDIATE transaction, reloads/validates the base and
-compares its generation with the expected token. It deletes children before their
+Every cache writer takes the same bounded SQLite sidecar reservation before
+revalidating inputs and writing. Full sibling replacement and incremental patching
+share one path-level writer domain; the reservation is released on process exit.
+The locked input recheck prevents an older full candidate from replacing a newer
+committed generation. `store::patch` then takes a SQLite IMMEDIATE transaction,
+reloads/validates the base and compares its generation with the expected token. It deletes children before their
 owners for removed/replaced paths, inserts changed groups with file-local ordinals,
 checks whole-store preflight, recomputes integrity/generation metadata, validates the
 result and commits. Any error rolls back. A typed conflict triggers one bounded
 reload/reconcile; it never blindly applies a patch from a stale base. Explicit full
-rebuild/repair still uses the synced sibling replacement path. This is optimistic
-coordination of incremental writers, not a filesystem snapshot or global lock service.
+rebuild/repair still uses the synced sibling replacement path under the shared
+reservation. Coordination is bounded per cache path, not a filesystem snapshot or
+long-lived service.
 
 `watch.rs` owns a `notify::RecommendedWatcher`, a one-slot standard synchronous
-channel and narrow atomic dirty/resync/error flags. Callbacks discard paths and
-only enqueue signals; access-only events are ignored unless resync is requested.
+channel and narrow atomic dirty/resync/error flags. It watches the requested root
+recursively and ancestor directories non-recursively for parent `.gitignore` and
+`.ignore` changes. Event paths only filter unrelated parent-directory activity;
+they never become scan or analysis evidence. Access-only events are ignored unless resync is requested.
 The foreground CLI owner coalesces bursts over a bounded 100 ms window and invokes
 the same reconciler. Overflow, backend rescan hints and errors trigger deterministic
-full-inventory reconciliation; activity during work remains pending. Watch registration
-precedes initial reconciliation. Operational output belongs to the CLI on stderr;
+full-inventory reconciliation. A periodic full reconciliation every 60 seconds also
+covers missed events and scanner controls outside the requested root; activity during work remains pending. Watch registration
+precedes initial reconciliation. Canonical scans remain authoritative for all
+inventory changes. Operational output belongs to the CLI on stderr;
 there is no streaming machine contract. Freshness/write failures preserve the prior
 committed generation. Normal process termination is sufficient.
 
@@ -868,9 +879,12 @@ Before accepting a change, ask:
 
 ---
 
-## 30. Immediate next step
+## 30. Keeping this architecture current
 
-Implement Phase 0 against this architecture. Do not add Phase 1 infrastructure beyond preserving these seams:
+Implementation and review status lives in `docs/current-state.md`; active future
+work is governed by the relevant plan under `docs/plans/`. Update this document when
+verified code or an accepted durable decision changes an architecture boundary.
+Preserve these seams as implementation evolves:
 
 ```text
 scan produces domain data

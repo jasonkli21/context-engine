@@ -16,7 +16,9 @@ The project is intentionally **descriptive rather than normative**. It aims to m
 The synchronous CLI scans repositories, indexes Rust/Python symbols, and builds a
 canonical in-memory graph of lexical containment, imports and call-site references,
 incrementally reconciling a validated external analysis cache after fresh inventory/content checks.
-`ctx watch` keeps that cache current in a foreground process.
+`ctx watch` keeps that cache current in a foreground process, including changes to
+parent `.gitignore` and `.ignore` controls for nested scan roots, with a bounded
+60-second reconciliation safety net for missed backend events.
 Phase 6 review findings have been addressed in a single follow-up commit; independent
 re-review and earlier pending phase dispositions remain pending. Phase 0 was accepted
 on 2026-10-14. Async, MCP, embeddings and model calls remain future work.

@@ -4,7 +4,7 @@
 
 **Active phase:** Phase 7 — Incremental Indexing
 
-**Overall status:** Phase 7 implemented and locally verified; fresh independent review required
+**Overall status:** Phase 7 review findings addressed and locally verified; fresh independent re-review required
 
 ## Delivered
 
@@ -17,8 +17,9 @@
   stamps. SQLite file-local transactions validate the expected generation and
   roll back failures; conflicts and whole-input pre/post mutation retry once.
 - Graphs reconstruct canonically from merged evidence. `index` remains force-full
-  repair. `watch` registers before initial reconciliation and coalesces filesystem
-  hints through a bounded queue; overflow/errors rescan deterministically. The CLI
+  repair. `watch` registers before initial reconciliation, monitors parent ignore
+  controls, coalesces filesystem hints through a bounded queue, and runs a 60-second
+  safety reconciliation; overflow/errors rescan deterministically. The CLI
   alone emits watch status/warnings to stderr. No async/service/parallel parsing.
   Evidence: [Phase 7 report](reports/phase-7-implementation-report.md).
 
@@ -116,6 +117,11 @@ Evidence: [Phase 5 review-fix report](reports/phase-5-review-fix-report.md),
 
 ## Acceptance and verification
 
+- The Phase 7 independent-review handoff findings are addressed in one follow-up
+  commit. Its canonical verifier passed with 99 unit / 61 integration tests. Fresh
+  independent re-review remains required; this does not accept Phase 7. See the
+  [Phase 7 review-fix report](reports/phase-7-review-fix-report.md).
+
 - The maintainer directly authorized Phase 7 from `5e3ae18` while Phase 6 fresh
   re-review and earlier dispositions remain pending. This is implementation
   authorization, not independent acceptance. Phase 7 verification is recorded in
@@ -203,10 +209,14 @@ Evidence: [Phase 5 review-fix report](reports/phase-5-review-fix-report.md),
 Phase 7 still scans and reads eligible source bytes on each request. Freshness
 reserves at most 256 MiB per pass; stores have additional size/record limits.
 If source freshness cannot be established, automatic current-state queries bypass
-the cache and return best-effort analysis with per-file `ReadFailed` status; explicit
-`index` fails and incomplete results are never persisted. Cache GC and atomic
-filesystem snapshots remain absent. Watch correctness derives from scans triggered by
-backend hints; there is no persisted event log or service/query server. Windows/native-wide support is implemented but
+the cache and return best-effort analysis with per-file `ReadFailed` status; if a
+read fails after snapshot units were retained, reconciliation discards them and
+rebuilds from a fresh live scan. Explicit `index` fails and incomplete results are
+never persisted. All cache writers share a bounded per-cache sidecar lock; complete
+filesystem snapshots remain absent. Watch monitors parent `.gitignore` and `.ignore`
+controls for nested roots and performs a canonical full reconciliation at least
+every 60 seconds to recover from missed backend events. There is no persisted event log or
+service/query server. Windows/native-wide support is implemented but
 not locally executed; non-UTF-8 store tests use injected native inventory records.
 
 Phase 5 packs complete files under a byte budget, not tokens/snippets. With

@@ -270,6 +270,13 @@ where
             if force {
                 return Err(CacheError::Freshness);
             }
+            // The merged candidate may contain snapshot-retained units. Once a
+            // changed-file read fails, discard the whole candidate and rebuild
+            // only from a new live scan so no unverified cached evidence escapes.
+            let live = scan_now(options)?;
+            let mut artifact = build(live)?;
+            index::validate_analysis(&artifact.index, &artifact.relation_files)?;
+            live_metadata(&mut artifact, scan_now(options)?);
             return Ok(Reconciled {
                 artifact,
                 warnings: vec![UNVERIFIED.into()],
@@ -298,8 +305,18 @@ where
         }
         live_metadata(&mut artifact, after);
         let saved = path.and_then(|path| {
+            let _lock = store::lock_writers(&path)?;
+            // The candidate was analyzed before acquiring the cross-mode writer
+            // lock. Revalidate under it, then keep the lock through commit so a
+            // stale full replacement cannot overtake a newer incremental patch.
+            let locked_scan = scan_now(options)?;
+            let (locked_stamp, locked_inputs) =
+                inputs_fn(&locked_scan, options.max_parse_file_bytes)?;
+            if locked_stamp != stamp || locked_inputs != inputs {
+                return Err(CacheError::Changed);
+            }
             if let Some(expected) = expected {
-                store::patch(
+                store::patch_locked(
                     &path,
                     &expected,
                     &artifact,
@@ -308,7 +325,7 @@ where
                     &inputs,
                 )?
             } else {
-                store::save_snapshot(
+                store::save_snapshot_locked(
                     &path,
                     &artifact,
                     options.max_parse_file_bytes,
@@ -319,9 +336,22 @@ where
             Ok(())
         });
         match saved {
+            Err(CacheError::Changed) if attempt == 0 => continue,
+            Err(error @ CacheError::Changed) => return Err(error),
             Err(CacheError::Store(store::StoreError::Conflict)) if attempt == 0 => continue,
             Err(error @ CacheError::Store(store::StoreError::Conflict)) => return Err(error),
             Err(error) if force => return Err(error),
+            Err(CacheError::Freshness) => {
+                let live = scan_now(options)?;
+                let mut artifact = build(live)?;
+                index::validate_analysis(&artifact.index, &artifact.relation_files)?;
+                live_metadata(&mut artifact, scan_now(options)?);
+                return Ok(Reconciled {
+                    artifact,
+                    warnings: vec![UNVERIFIED.into()],
+                    committed: false,
+                });
+            }
             Err(error) => {
                 return Ok(Reconciled {
                     artifact,
@@ -924,6 +954,74 @@ mod tests {
                 .symbols
                 .iter()
                 .any(|s| s.name == "cached")
+        );
+        assert_eq!(prior, std::fs::read(&path).unwrap());
+    }
+
+    #[test]
+    fn incremental_analyzer_read_failure_discards_retained_units_and_rebuilds_live() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let path = cache.path().join("cache.sqlite3");
+        let opts = options(root.path());
+        std::fs::write(root.path().join("a.py"), "def old_a(): pass\n").unwrap();
+        std::fs::write(root.path().join("b.py"), "def old_b(): pass\n").unwrap();
+        load_with(&opts, false, Some(&path), build).unwrap();
+        let prior = std::fs::read(&path).unwrap();
+        let before =
+            store::load_snapshot(&path, &std::fs::canonicalize(root.path()).unwrap(), 1024)
+                .unwrap();
+        std::fs::write(root.path().join("a.py"), "def new_a(): pass\n").unwrap();
+        let (_, now) = file_inputs(&scan_now(&opts).unwrap(), 1024, MAX_FRESHNESS_BYTES).unwrap();
+        assert_ne!(before.inputs, now);
+        let mut builds = 0;
+        let result = reconcile_with(
+            &opts,
+            false,
+            Some(&path),
+            |scan| {
+                builds += 1;
+                let (mut index, relation_files) = index::analyze_scan(scan, 1024, true)?;
+                if builds == 1 {
+                    let failed = index
+                        .files
+                        .iter_mut()
+                        .find(|f| f.relative_path == Path::new("a.py"))
+                        .unwrap();
+                    failed.status = AnalysisStatus::ReadFailed;
+                    failed.symbol_count = 0;
+                    index
+                        .symbols
+                        .retain(|s| s.relative_path != Path::new("a.py"));
+                    // This file was initially classified unchanged. It must not
+                    // leak its old cached evidence through the failure fallback.
+                    std::fs::write(root.path().join("b.py"), "def live_b(): pass\n").unwrap();
+                }
+                Ok(AnalysisArtifact {
+                    index,
+                    relation_files,
+                })
+            },
+            |scan, max| file_inputs(scan, max, MAX_FRESHNESS_BYTES),
+        )
+        .unwrap();
+        assert_eq!(builds, 2);
+        assert!(!result.committed);
+        assert!(
+            result
+                .artifact
+                .index
+                .symbols
+                .iter()
+                .any(|s| s.name == "live_b")
+        );
+        assert!(
+            !result
+                .artifact
+                .index
+                .symbols
+                .iter()
+                .any(|s| s.name == "old_b")
         );
         assert_eq!(prior, std::fs::read(&path).unwrap());
     }
