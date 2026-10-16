@@ -16,6 +16,106 @@ use crate::{
 use serde::Serialize;
 use std::collections::BTreeMap;
 
+fn budget_error() -> serde_json::Error {
+    serde_json::Error::io(std::io::Error::other("change output safety limit exceeded"))
+}
+
+// A conservative upper bound is checked before building owned DTO vectors or
+// the human String. Account for worst-case JSON escaping and per-record syntax,
+// including repeated entities/relations in each root group.
+pub(crate) fn check_materialization(
+    set: &ChangeSet,
+    limit: usize,
+) -> Result<usize, serde_json::Error> {
+    let mut estimate = 4096usize;
+    let mut add = |n: usize| -> Result<(), serde_json::Error> {
+        estimate = estimate
+            .checked_add(n)
+            .filter(|n| *n <= limit)
+            .ok_or_else(budget_error)?;
+        Ok(())
+    };
+    add(set.range.len().saturating_mul(6))?;
+    add(set.revisions.root.as_os_str().len().saturating_mul(6))?;
+    add(set.revisions.scope.as_os_str().len().saturating_mul(6))?;
+    for f in &set.files {
+        add(2048)?;
+        for e in [&f.git.before, &f.git.after].into_iter().flatten() {
+            add(e.path.as_os_str().len().saturating_mul(6) + e.mode.len() + e.oid.len())?;
+        }
+        for s in &f.symbols {
+            add(2048)?;
+            for (snap, index) in [(&set.base, s.before), (&set.head, s.after)] {
+                if let Some(i) = index {
+                    let v = &snap.graph.index.symbols[i];
+                    add(v.qualified_name.len().saturating_mul(6)
+                        + v.relative_path.as_os_str().len().saturating_mul(6))?;
+                }
+            }
+        }
+        for r in &f.relations {
+            let metadata = match &r.signature.metadata {
+                Metadata::Import { binding, .. } => binding.as_deref().map_or(0, str::len),
+                _ => 0,
+            };
+            add(4096
+                + r.signature.source.name.len().saturating_mul(6)
+                + r.signature.target.name.len().saturating_mul(6)
+                + metadata.saturating_mul(6))?;
+        }
+    }
+    for (graph, query) in set
+        .impact
+        .as_ref()
+        .map(|i| [(&set.base.graph, &i.base), (&set.head.graph, &i.head)])
+        .into_iter()
+        .flatten()
+    {
+        for root in &query.results {
+            add(4096 + entity_text_bytes(graph, root.root).saturating_mul(6))?;
+            for &id in &root.entities {
+                add(4096 + entity_text_bytes(graph, id).saturating_mul(12))?;
+            }
+            for &id in &root.relations {
+                let relation = &graph.relations[id.0 as usize];
+                let metadata = match &relation.metadata {
+                    Metadata::Import { binding, .. } => binding.as_deref().map_or(0, str::len),
+                    _ => 0,
+                };
+                let endpoints = entity_text_bytes(graph, relation.source).saturating_add(
+                    match &relation.target {
+                        crate::graph::Target::Resolved(target) => entity_text_bytes(graph, *target),
+                        crate::graph::Target::Unresolved(text) => text.len(),
+                    },
+                );
+                add(4096
+                    + relation
+                        .evidence
+                        .relative_path
+                        .as_os_str()
+                        .len()
+                        .saturating_mul(6)
+                    + endpoints.saturating_mul(6)
+                    + metadata.saturating_mul(6))?;
+            }
+        }
+    }
+    Ok(estimate)
+}
+fn entity_text_bytes(g: &RepositoryGraph, id: EntityId) -> usize {
+    match g.entities[id.0 as usize] {
+        Entity::File(i) => g.index.files[i].relative_path.as_os_str().len(),
+        Entity::Symbol(i) => {
+            let s = &g.index.symbols[i];
+            s.relative_path
+                .as_os_str()
+                .len()
+                .saturating_add(s.qualified_name.len())
+        }
+        Entity::Repository => 16,
+    }
+}
+
 #[derive(Serialize)]
 struct Coverage {
     files: usize,
@@ -198,6 +298,8 @@ struct RootDto<'a> {
     seed: EntityDto<'a>,
     seed_file_change: usize,
     seed_symbol_change: Option<usize>,
+    seed_kind: &'static str,
+    traversal_policy: &'static str,
     visits: Vec<VisitDto<'a>>,
     relations: Vec<RelationDto<'a>>,
     truncated: bool,
@@ -208,6 +310,8 @@ struct ImpactSideDto<'a> {
     seeds_requested: usize,
     seeds_omitted: usize,
     depth: u8,
+    seed_kind: &'static str,
+    traversal_policy: &'static str,
     roots_truncated: bool,
     truncated: bool,
     results: Vec<RootDto<'a>>,
@@ -271,6 +375,16 @@ fn impact_side<'a>(
         seeds_requested: count,
         seeds_omitted: count - q.roots.len(),
         revision_side: if before { "base" } else { "head" },
+        seed_kind: if before {
+            set.impact.as_ref().unwrap().base_seed_kind
+        } else {
+            set.impact.as_ref().unwrap().head_seed_kind
+        },
+        traversal_policy: if before {
+            set.impact.as_ref().unwrap().base_policy
+        } else {
+            set.impact.as_ref().unwrap().head_policy
+        },
         depth: q.depth,
         roots_truncated: q.roots_truncated,
         truncated: q.truncated,
@@ -283,6 +397,16 @@ fn impact_side<'a>(
                     seed: entity(g, r.root),
                     seed_file_change,
                     seed_symbol_change,
+                    seed_kind: if before {
+                        set.impact.as_ref().unwrap().base_seed_kind
+                    } else {
+                        set.impact.as_ref().unwrap().head_seed_kind
+                    },
+                    traversal_policy: if before {
+                        set.impact.as_ref().unwrap().base_policy
+                    } else {
+                        set.impact.as_ref().unwrap().head_policy
+                    },
                     visits: r
                         .entities
                         .iter()
@@ -438,6 +562,7 @@ fn report(set: &ChangeSet) -> ReportDto<'_> {
     }
 }
 pub fn json(command: &str, set: &ChangeSet) -> Result<String, serde_json::Error> {
+    let _estimate = check_materialization(set, MAX_JSON_BYTES)?;
     bounded_json(
         &Envelope {
             schema_version: 1,
@@ -447,10 +572,13 @@ pub fn json(command: &str, set: &ChangeSet) -> Result<String, serde_json::Error>
         MAX_JSON_BYTES,
     )
 }
-pub fn human(command: &str, set: &ChangeSet) -> String {
+pub fn human(command: &str, set: &ChangeSet) -> Result<String, serde_json::Error> {
     use std::fmt::Write;
+    let estimate = check_materialization(set, MAX_JSON_BYTES)?;
     let d = report(set);
-    let mut out = format!(
+    let mut out = String::with_capacity(estimate);
+    let _ = write!(
+        out,
         "{command}: {}\nRepository: {}\nScope: {}\nBase: {}\nHead: {}\n{}\n{}\n{}\nAnalysis scope: {}\nFile changes: {}; ambiguous symbol keys: {}; unavailable symbol/relation comparisons: {}/{}\n",
         escape_controls(d.input_range),
         escape_controls(&d.repository_root),
@@ -579,9 +707,19 @@ pub fn human(command: &str, set: &ChangeSet) -> String {
             } else {
                 i.head_seed_count
             };
+            let seed_kind = if side == "base" {
+                i.base_seed_kind
+            } else {
+                i.head_seed_kind
+            };
+            let policy = if side == "base" {
+                i.base_policy
+            } else {
+                i.head_policy
+            };
             let _ = writeln!(
                 out,
-                "  Seeds requested: {}; omitted: {}",
+                "  Seed kind: {seed_kind}; traversal policy: {policy}; requested: {}; omitted: {}",
                 count,
                 count - q.roots.len()
             );
@@ -637,7 +775,8 @@ pub fn human(command: &str, set: &ChangeSet) -> String {
             escape_controls(&c.path)
         );
     }
-    out.trim_end().into()
+    out.truncate(out.trim_end().len());
+    Ok(out)
 }
 
 #[cfg(test)]

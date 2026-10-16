@@ -63,6 +63,10 @@ pub struct Impact {
     pub head: QueryResult,
     pub base_seed_count: usize,
     pub head_seed_count: usize,
+    pub base_seed_kind: &'static str,
+    pub head_seed_kind: &'static str,
+    pub base_policy: &'static str,
+    pub head_policy: &'static str,
 }
 pub struct ChangeSet {
     pub revisions: Revisions,
@@ -166,31 +170,44 @@ fn analyze_with_limits(
     }
     Ok(set)
 }
-fn impact(set: &ChangeSet, depth: u8, mut limits: TraversalLimits) -> Impact {
-    let base_seeds = seeds(set, true);
-    let head_seeds = seeds(set, false);
+fn impact(set: &ChangeSet, depth: u8, limits: TraversalLimits) -> Impact {
+    let (base_seeds, base_kind, base_policy) = seeds(set, true);
+    let (head_seeds, head_kind, head_policy) = seeds(set, false);
     let base_seed_count = base_seeds.len();
     let head_seed_count = head_seeds.len();
-
+    // Reserve equal deterministic capacity for each revision before either side
+    // can spend the shared budget. Symbol seeds use caller traversal; file roots
+    // are a fallback when no changed symbol is confidently available.
+    let base_limits = TraversalLimits {
+        roots: limits.roots.div_ceil(2),
+        visited: limits.visited.div_ceil(2),
+        emitted: limits.emitted.div_ceil(2),
+    };
+    let head_limits = TraversalLimits {
+        roots: limits.roots / 2,
+        visited: limits.visited / 2,
+        emitted: limits.emitted / 2,
+    };
     let base = set.base.graph.traverse_roots(
-        graph::QueryKind::Neighborhood,
+        if base_kind == "changed_symbol" {
+            graph::QueryKind::Callers
+        } else {
+            graph::QueryKind::Neighborhood
+        },
         base_seeds,
         depth,
-        limits,
+        base_limits,
         "exact_revision_descriptors",
     );
-    limits.roots = limits.roots.saturating_sub(base.roots.len());
-    limits.visited = limits
-        .visited
-        .saturating_sub(base.results.iter().map(|r| r.entities.len()).sum());
-    limits.emitted = limits
-        .emitted
-        .saturating_sub(base.results.iter().map(|r| r.relations.len()).sum());
     let head = set.head.graph.traverse_roots(
-        graph::QueryKind::Neighborhood,
+        if head_kind == "changed_symbol" {
+            graph::QueryKind::Callers
+        } else {
+            graph::QueryKind::Neighborhood
+        },
         head_seeds,
         depth,
-        limits,
+        head_limits,
         "exact_revision_descriptors",
     );
     Impact {
@@ -198,6 +215,10 @@ fn impact(set: &ChangeSet, depth: u8, mut limits: TraversalLimits) -> Impact {
         head,
         base_seed_count,
         head_seed_count,
+        base_seed_kind: base_kind,
+        head_seed_kind: head_kind,
+        base_policy,
+        head_policy,
     }
 }
 
@@ -489,7 +510,7 @@ fn occurrences(s: &Snapshot, e: Option<&Entry>) -> BTreeMap<Signature, Occurrenc
     }
     map
 }
-fn seeds(set: &ChangeSet, before: bool) -> Vec<EntityId> {
+fn seeds(set: &ChangeSet, before: bool) -> (Vec<EntityId>, &'static str, &'static str) {
     let g = if before {
         &set.base.graph
     } else {
@@ -507,17 +528,29 @@ fn seeds(set: &ChangeSet, before: bool) -> Vec<EntityId> {
             }
         }
     }
-    g.entities
+    let symbols: Vec<_> = g
+        .entities
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| {
+            matches!(e, Entity::Symbol(s) if symbols.contains(s)).then_some(EntityId(i as u32))
+        })
+        .collect();
+    if !symbols.is_empty() {
+        return (symbols, "changed_symbol", "incoming_callers");
+    }
+    let files = g
+        .entities
         .iter()
         .enumerate()
         .filter_map(|(i, e)| match e {
             Entity::File(f) if paths.contains(g.index.files[*f].relative_path.as_path()) => {
                 Some(EntityId(i as u32))
             }
-            Entity::Symbol(s) if symbols.contains(s) => Some(EntityId(i as u32)),
             _ => None,
         })
-        .collect()
+        .collect();
+    (files, "changed_file", "file_neighborhood_fallback")
 }
 
 #[cfg(test)]
@@ -646,8 +679,8 @@ mod tests {
         let (d, input) = fixture();
         let set = analyze(d.path(), &input, 100, Some(2)).unwrap();
         let g = &set.base.graph;
-        let roots = seeds(&set, true);
-        assert_eq!(roots.len(), 2);
+        let (roots, _, _) = seeds(&set, true);
+        assert_eq!(roots.len(), 1);
         let full = g.traverse_roots(
             graph::QueryKind::Neighborhood,
             roots.clone(),
@@ -662,7 +695,7 @@ mod tests {
         assert!(!full.truncated);
         assert_eq!(
             full.results.iter().map(|r| r.entities.len()).sum::<usize>(),
-            4
+            2
         );
         let limited = g.traverse_roots(
             graph::QueryKind::Neighborhood,
@@ -670,7 +703,7 @@ mod tests {
             2,
             TraversalLimits {
                 roots: 2,
-                visited: 3,
+                visited: 1,
                 emitted: 2,
             },
             "test",
@@ -678,7 +711,7 @@ mod tests {
         assert!(limited.truncated);
         let omitted = g.traverse_roots(
             graph::QueryKind::Neighborhood,
-            roots,
+            vec![roots[0], roots[0]],
             2,
             TraversalLimits {
                 roots: 1,
@@ -701,15 +734,15 @@ mod tests {
         };
         let result = impact(&set, 2, full);
         assert!(!result.base.truncated && !result.head.truncated);
-        assert_eq!(result.base_seed_count + result.head_seed_count, 4);
+        assert_eq!(result.base_seed_count + result.head_seed_count, 2);
         for l in [
             TraversalLimits { roots: 3, ..full },
             TraversalLimits { visited: 7, ..full },
             TraversalLimits { emitted: 3, ..full },
         ] {
             let r = impact(&set, 2, l);
-            assert!(r.head.truncated);
             assert!(r.base.roots.len() + r.head.roots.len() <= l.roots);
+            assert!(!r.base.roots.is_empty() && !r.head.roots.is_empty());
             assert!(
                 r.base
                     .results
@@ -729,6 +762,14 @@ mod tests {
                     <= l.emitted
             );
         }
+    }
+    #[test]
+    fn output_materialization_budget_accepts_exact_estimate_and_rejects_one_less() {
+        let (d, input) = fixture();
+        let set = analyze(d.path(), &input, 100, Some(2)).unwrap();
+        let estimate = crate::output::change::check_materialization(&set, usize::MAX).unwrap();
+        assert!(crate::output::change::check_materialization(&set, estimate).is_ok());
+        assert!(crate::output::change::check_materialization(&set, estimate - 1).is_err());
     }
     #[cfg(unix)]
     #[test]

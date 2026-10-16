@@ -202,6 +202,8 @@ fn impact_has_correct_sides_shortest_predecessors_and_candidate_evidence() {
     }
     for side in sides {
         let roots = side["results"].as_array().unwrap();
+        assert_eq!(side["seed_kind"], "changed_symbol");
+        assert_eq!(side["traversal_policy"], "incoming_callers");
         assert!(
             roots
                 .iter()
@@ -441,12 +443,103 @@ fn production_impact_reports_shared_root_omissions_across_sides() {
             .sum::<usize>(),
         128
     );
-    assert_eq!(sides[0]["seeds_requested"], 71);
-    assert_eq!(sides[1]["seeds_requested"], 71);
-    assert_eq!(sides[0]["seeds_omitted"], 0);
-    assert_eq!(sides[1]["seeds_omitted"], 14);
+    assert_eq!(sides[0]["seeds_requested"], 70);
+    assert_eq!(sides[1]["seeds_requested"], 70);
+    assert_eq!(sides[0]["seeds_omitted"], 6);
+    assert_eq!(sides[1]["seeds_omitted"], 6);
     assert_eq!(sides[1]["roots_truncated"], true);
-    assert!(human(r, "impact", &range).contains("omitted: 14"));
+    assert!(human(r, "impact", &range).contains("omitted: 6"));
+}
+
+#[test]
+fn impact_changed_symbol_uses_incoming_callers_not_its_outgoing_dependency() {
+    let d = init();
+    let r = d.path();
+    write(
+        r,
+        "a.py",
+        "def dependency(): pass\ndef changed(): dependency()\ndef caller(): changed()\n",
+    );
+    let a = commit(r);
+    write(
+        r,
+        "a.py",
+        "def dependency(): pass\ndef changed(): dependency(); dependency()\ndef caller(): changed()\n",
+    );
+    let b = commit(r);
+    let range = format!("{a}..{b}");
+    let v = run(r, "impact", &range, &["--depth", "2"]).0;
+    let sides = v["impact"].as_array().unwrap();
+    let head = sides[1]["results"].as_array().unwrap();
+    let root = head
+        .iter()
+        .find(|r| r["seed"]["symbol"]["qualified_name"] == "changed")
+        .unwrap();
+    assert!(
+        root["visits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["entity"]["symbol"]["qualified_name"] == "caller")
+    );
+    assert!(
+        !root["visits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["entity"]["symbol"]["qualified_name"] == "dependency")
+    );
+}
+
+#[test]
+fn nested_scope_ignores_historical_file_at_exact_scope_prefix() {
+    let d = init();
+    let r = d.path();
+    write(r, "backend", "old file\n");
+    let a = commit(r);
+    fs::remove_file(r.join("backend")).unwrap();
+    write(r, "backend/a.py", "def current(): pass\n");
+    let b = commit(r);
+    let range = format!("{a}..{b}");
+    let v = run(&r.join("backend"), "impact", &range, &[]).0;
+    assert_eq!(
+        v["scope_root"],
+        r.join("backend")
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .as_ref()
+    );
+    assert!(v["files"].as_array().unwrap().iter().all(|f| {
+        !f["before"]["path"].as_str().unwrap_or("x").is_empty()
+            && !f["after"]["path"].as_str().unwrap_or("x").is_empty()
+    }));
+    assert!(
+        !v["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["before"]["path"] == "")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn nested_scope_ignores_historical_symlink_at_exact_scope_prefix() {
+    use std::os::unix::fs::symlink;
+    let d = init();
+    let r = d.path();
+    symlink("missing-target", r.join("backend")).unwrap();
+    let a = commit(r);
+    fs::remove_file(r.join("backend")).unwrap();
+    write(r, "backend/a.py", "def current(): pass\n");
+    let b = commit(r);
+    let range = format!("{a}..{b}");
+    let v = run(&r.join("backend"), "impact", &range, &[]).0;
+    assert!(v["files"].as_array().unwrap().iter().all(|f| {
+        !f["before"]["path"].as_str().unwrap_or("x").is_empty()
+            && !f["after"]["path"].as_str().unwrap_or("x").is_empty()
+    }));
 }
 
 #[test]

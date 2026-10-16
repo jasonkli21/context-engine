@@ -226,7 +226,7 @@ fn change_command(
         depth,
     )?;
     Ok(match args.analysis.format {
-        Format::Human => output::change::human(command, &set),
+        Format::Human => output::change::human(command, &set)?,
         Format::Json => output::change::json(command, &set)?,
     })
 }

@@ -379,6 +379,10 @@ The chosen rename threshold must be fixed and reported or documented.
 
 It should **not** build two whole-repository graphs merely to list changes.
 
+When converting Git-root paths to a directory scope, accept strict descendants
+only. A historical file, symlink, or gitlink exactly at the scope prefix is not
+a scope-relative file and must not become an empty path identity.
+
 `ctx impact` may build bounded full base/head revision graphs because dependents can live outside changed files.
 
 This keeps the common structural-diff path smaller.
@@ -974,6 +978,14 @@ Reuse existing:
 
 Impact traversal budgets must be shared across all change seeds for one revision side, not reset independently per seed.
 
+When both revisions contain impact seeds, allocate root, visit, and relation
+budgets deterministically across base and head before traversal. A changed-symbol
+seed has priority over a changed-file fallback; use file neighborhoods when no
+confident changed-symbol seed is available for that side. Output identifies the
+seed kind and traversal policy. Rendering must check a conservative materialized
+size bound before allocating DTOs or human output, while retaining the final
+bounded JSON writer.
+
 ## 16.3 Impact result
 
 A practical result can remain grouped by seed:
@@ -1111,10 +1123,10 @@ Git source bytes per revision       256 MiB
 per-file parse bytes                existing default/configurable limit
 repository symbols/names/details    existing Phase 1 limits
 graph entities/relations/text       existing Phase 2 limits
-impact roots                        existing 128-root ceiling
-impact visited entities             existing 10,000 shared ceiling
-impact relation occurrences         existing 25,000 shared ceiling
-JSON serialized output              existing 64 MiB
+impact roots                        existing 128-root ceiling, fairly split
+impact visited entities             existing 10,000 shared ceiling, fairly split
+impact relation occurrences         existing 25,000 shared ceiling, fairly split
+human/JSON materialized output       existing 64 MiB ceiling
 ```
 
 Exact constants may be adjusted if implementation evidence justifies a better value.
@@ -1124,6 +1136,8 @@ Requirements:
 - exact-boundary and over-boundary tests use injected small limits;
 - do not create huge physical fixtures merely to hit limits;
 - fatal Git/revision/index/graph/output overflow emits no partial JSON;
+- JSON and human output check a conservative materialization estimate before
+  building owned DTO collections or rendered strings;
 - query/traversal truncation remains explicit where omission is a normal bounded-query behavior;
 - structural analysis omission for an individual changed file is represented in coverage rather than silently discarded.
 

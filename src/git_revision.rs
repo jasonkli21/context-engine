@@ -232,8 +232,8 @@ impl Revisions {
         for change in &mut changes {
             for side in [&mut change.before, &mut change.after] {
                 if let Some(e) = side {
-                    if let Ok(p) = e.path.strip_prefix(&self.prefix) {
-                        e.path = p.to_owned();
+                    if let Some(p) = scope_relative(&e.path, &self.prefix) {
+                        e.path = p;
                     } else {
                         *side = None;
                     }
@@ -387,10 +387,11 @@ fn parse_tree(bytes: &[u8], prefix: &Path, l: Limits) -> Result<Vec<Entry>, Erro
             return Err(Error::Git("tree record"));
         }
         let p = path(&record[tab + 1..])?;
-        let p = p
-            .strip_prefix(prefix)
-            .map_err(|_| Error::Git("tree scope"))?
-            .to_path_buf();
+        let Some(p) = scope_relative(&p, prefix) else {
+            // A historical file/symlink/gitlink exactly at the current directory
+            // scope is not an entry inside that directory.
+            continue;
+        };
         paths = paths.saturating_add(p.as_os_str().len());
         if result.len() >= l.entries || paths > l.tree_paths {
             return Err(Error::Limit("inventory records/paths"));
@@ -408,6 +409,13 @@ fn parse_tree(bytes: &[u8], prefix: &Path, l: Limits) -> Result<Vec<Entry>, Erro
     }
     result.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(result)
+}
+
+/// Convert a Git-root path to a strict descendant of the requested directory.
+/// The prefix itself is excluded because it is not a file within that scope.
+fn scope_relative(path: &Path, prefix: &Path) -> Option<PathBuf> {
+    let relative = path.strip_prefix(prefix).ok()?;
+    (!relative.as_os_str().is_empty()).then(|| relative.to_path_buf())
 }
 
 #[cfg(test)]

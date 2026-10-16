@@ -61,12 +61,14 @@ or probe Git. Help and version: `ctx --help`, `ctx scan --help`, `ctx --version`
 ### Committed structural changes
 
 `diff BASE..HEAD [PATH]` compares two explicitly supplied committed revisions.
-`impact BASE..HEAD [PATH] --depth 0..8` adds bounded base/head graph neighborhoods
+`impact BASE..HEAD [PATH] --depth 0..8` adds bounded base/head impact evidence
 (default depth 1). Both accept `--format human|json` and
 `--max-parse-file-size BYTES` (default 1 MiB). There is no implicit range,
 triple-dot, staged, untracked, or dirty-worktree mode. Git is required. `[PATH]`
 is an existing directory scope; nested scopes exclude sibling changes and emit
-scope-relative `/` paths. Endpoints resolve to full commit IDs before analysis.
+scope-relative `/` paths. A historical entry exactly at the scope prefix is not
+inside that directory and is excluded. Endpoints resolve to full commit IDs
+before analysis.
 
 Diff analyzes changed file sides only. Impact builds both scoped committed tree
 inventories with the same Rust/Python analyzers and graph construction used by
@@ -93,24 +95,26 @@ counts. Non-UTF-8 native paths retain internal identity, are displayed lossily w
 explicit flags, and are omitted from structural parsing. Non-regular modes are
 reported without following symlinks or submodules.
 
-Impact seeds directly changed file entities and confidently changed symbols on
-the applicable side. Removed symbols use the base graph, added symbols use head,
-and modified symbols use both. Neighborhoods reuse the existing BFS, excluding
+Confidently changed symbols use incoming caller evidence as primary impact seeds.
+Changed-file neighborhoods are fallback seeds when that side has no confident
+changed-symbol seeds. Removed symbols use the base graph, added symbols use head,
+and modified symbols use both. Traversal reuses the existing BFS, excluding
 repository containment. Visits carry distance, predecessor and relation evidence;
-seeds reference their file/symbol changes. Reached test-role entities and directly
-changed test/doc files are candidates, not test coverage or runtime predictions.
+seeds identify their kind and traversal policy. Reached test-role entities and
+directly changed test/doc files are candidates, not test coverage or runtime predictions.
 Imports remain unresolved and references resolve only by the existing unique
 exact same-file qualified-name heuristic; cross-file results are usually sparse.
 
 Impact shares **128 roots, 10,000 visits and 25,000 relation occurrences across
-both revisions**, processing base first in canonical graph order. Omitted seed
-counts and root/traversal truncation are explicit. Fatal resource failures emit no
-partial JSON. Additional ceilings: 4 KiB range text; 10,000 changed records / 4 MiB
+both revisions**, reserving deterministic capacity for each side before traversal.
+Omitted seed counts and root/traversal truncation are explicit. Human and JSON
+rendering enforce the 64 MiB materialization ceiling; fatal resource failures emit
+no partial JSON. Additional ceilings: 4 KiB range text; 10,000 changed records / 4 MiB
 path bytes; 16 MiB raw diff; 50,000 inventory records / 4 MiB path bytes / 16 MiB
 raw tree output per revision; 256 MiB loaded source per revision. Diff enumeration
 is repository-wide before scope filtering to retain cross-boundary rename evidence,
 so unrelated changes can exhaust its safety ceiling. Existing analyzer/graph limits
-and the 64 MiB bounded schema-v1 JSON writer still apply. Identical inputs and
+and the 64 MiB schema-v1 output bound still applies. Identical inputs and
 options produce deterministic output; an empty change set succeeds.
 
 ### Query and repository intelligence

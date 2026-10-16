@@ -4,7 +4,7 @@
 
 **Active phase:** Phase 4 — Git and Structural Change Intelligence
 
-**Overall status:** Phase 4 implemented and locally verified; fresh independent review pending
+**Overall status:** Phase 4 review findings fixed and locally verified; fresh independent re-review pending
 
 ## Delivered
 
@@ -20,6 +20,10 @@
   candidates, directly changed test/docs and shared base/head safety budgets.
 - New escaped human and bounded schema-v1 JSON outputs expose revision/scope,
   analysis coverage, unavailable comparisons, omitted seeds and truncation.
+- Review fixes prioritize changed-symbol incoming caller evidence, reserve impact
+  budgets across base/head, use changed-file neighborhoods as fallback, preflight
+  a conservative 64 MiB human/JSON materialization bound, and exclude historical
+  entries exactly at a nested scope prefix.
 
 
 - Phase 3 index-only deterministic path/symbol `search`, generalized bounded
@@ -69,6 +73,11 @@ Evidence: [Phase 4 report](reports/phase-4-implementation-report.md),
   a deterministic dirty-worktree Git fixture and the real Phase 3 fix range.
   Existing isolated macOS toolchain reused; no global setup changed. See report
   for observations, bounds, conservative omissions and audit evidence.
+- Independent Phase 4 review identified three findings. All three are addressed
+  in one follow-up change. The canonical verifier passed with 58 unit and 53
+  integration tests; all-target check, release build and diff whitespace checks
+  passed. See [Phase 4 review-fix report](reports/phase-4-review-fix-report.md).
+  Fresh independent re-review remains pending; this is not Phase 4 acceptance.
 
 
 - The maintainer explicitly authorized Phase 3 from `09efd22` while final
@@ -128,7 +137,7 @@ filesystem TOCTOU races remain; results are not atomic snapshots.
 
 ## Next step
 
-Fresh independent Phase 4 review, findings/fixes and final disposition. Phase 3
-fixes still require fresh independent re-review; Phase 1/2 final independent
+Fresh independent Phase 4 re-review and final disposition. Phase 3 fixes still
+require fresh independent re-review; Phase 1/2 final independent
 dispositions also remain pending. Local verification does not constitute
 independent acceptance of any phase.
