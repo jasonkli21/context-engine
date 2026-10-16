@@ -4,7 +4,7 @@
 
 **Active phase:** Phase 3 — Query and Repository Intelligence
 
-**Overall status:** Phase 3 implemented and locally verified; independent review pending
+**Overall status:** Phase 3 review findings fixed and locally verified; independent re-review pending
 
 ## Delivered
 
@@ -13,6 +13,11 @@
   exclusion, and current-graph structural `hotspots` with distinct fan-in/out.
 - Conservative reached test-role candidate associations; explicit ranking tuples,
   result/root/traversal truncation, escaped human and bounded schema-v1 JSON.
+- New query outputs identify repository scope and index-local IDs, summarize
+  analysis coverage/incompleteness, and expose relation statuses where applicable.
+- File search uses normalized `/` paths and excludes non-UTF-8 paths from textual
+  matching with explicit omission counts; human test associations show named
+  visits and predecessor/relation evidence.
 
 - Phase 0 scanner and Phase 1 Rust/Python symbol indexing remain intact, including
   bounded loading, fail-closed symbol budgets and deterministic schema-v1 output.
@@ -28,6 +33,8 @@
   relation-file accounting alongside every file's Phase 1 analysis status.
 
 Evidence: [Phase 3 report](reports/phase-3-implementation-report.md),
+[Phase 3 review-fix report](reports/phase-3-review-fix-report.md),
+[independent Phase 3 review](reviews/phase-3-independent-review.md),
 [Phase 0 report](reports/phase-0-implementation-report.md),
 [Phase 1 report](reports/phase-1-implementation-report.md),
 [Phase 1 review-fix report](reports/phase-1-review-fix-report.md),
@@ -45,6 +52,10 @@ Evidence: [Phase 3 report](reports/phase-3-implementation-report.md),
   passed, with 20 human/JSON release smoke invocations against this repository
   and the real sibling Python Context Integrity repository. The existing isolated
   macOS Rust toolchain was reused; no global setup changed.
+- The independent Phase 3 review found four blocking output/path/evidence issues.
+  All four were addressed in one follow-up commit. The canonical verifier passed
+  with 47 unit and 40 integration tests. This is local implementation evidence;
+  fresh independent re-review is still required and has not been claimed.
 
 - Phase 0 was accepted by the user on 2026-10-14 with independent re-review waived.
 - The user explicitly authorized Phase 2 despite Phase 1's remaining final
@@ -72,12 +83,14 @@ and may renumber across edits. Graphs are rebuilt per command; no persistence,
 concurrency, async, MCP, embeddings, model calls or policy behavior exists.
 Relation budgets discard a failed file's extracted facts while retaining valid
 symbols and structural containment. Queries expose truncation on safety overflow.
-UTF-8 Rust/Python only; generated/vendor source skipped. Existing parse recovery,
-lossy native output paths, scanner/Git limitations and filesystem TOCTOU races
-remain; results are not atomic snapshots.
+UTF-8 Rust/Python only; generated/vendor source skipped. Non-UTF-8 paths are
+presented lossily and omitted from textual file-path search, with that condition
+reported in query coverage. Existing parse recovery, scanner/Git limitations and
+filesystem TOCTOU races remain; results are not atomic snapshots.
 
 ## Next step
 
-Fresh independent Sol High review of Phase 3, followed by any findings/fixes and
-final disposition. Phase 1/2 final independent disposition also remains pending.
+Fresh independent review of the Phase 3 fixes, followed by any further findings
+and final disposition. Phase 1/2 final independent disposition also remains
+pending.
 Local verification does not constitute independent acceptance of any phase.

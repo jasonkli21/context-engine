@@ -1,5 +1,5 @@
 //! Read-only intelligence over the canonical bounded index and graph.
-use crate::{graph::*, model::RepositoryIndex, relations::RelationKind};
+use crate::{graph::*, model::RepositoryIndex, paths::utf8_relative, relations::RelationKind};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const MAX_QUERY_BYTES: usize = 4096;
@@ -74,7 +74,10 @@ pub fn search(
     let mut matches = vec![];
     if !matches!(kind, SearchKind::Symbol) {
         for (i, file) in index.files.iter().enumerate() {
-            if let Some(tier) = tier(&file.relative_path.to_string_lossy(), query, 2) {
+            let Some(path) = utf8_relative(&file.relative_path) else {
+                continue;
+            };
+            if let Some(tier) = tier(&path, query, 2) {
                 matches.push(SearchMatch {
                     entity: EntityId((1 + i) as u32),
                     tier,
@@ -252,4 +255,44 @@ pub fn hotspots(g: &RepositoryGraph, limit: usize) -> Result<Hotspots, &'static 
         symbols_truncated,
         files_truncated,
     })
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::{
+        classify::{FileRole, Language},
+        model::{AnalysisStatus, FileAnalysis},
+    };
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf};
+
+    #[test]
+    fn distinct_non_utf8_paths_that_display_identically_are_not_searched_as_text() {
+        let first = PathBuf::from(OsString::from_vec(b"odd\xff.rs".to_vec()));
+        let second = PathBuf::from(OsString::from_vec(b"odd\xfe.rs".to_vec()));
+        assert_ne!(first, second);
+        assert_eq!(first.to_string_lossy(), second.to_string_lossy());
+
+        let index = RepositoryIndex {
+            root: "/fixture".into(),
+            git: None,
+            scan_warnings: vec![],
+            files: [first, second]
+                .into_iter()
+                .map(|relative_path| FileAnalysis {
+                    relative_path,
+                    language: Language::Rust,
+                    role: FileRole::Source,
+                    status: AnalysisStatus::Analyzed,
+                    symbol_count: 0,
+                    syntax_error_count: 0,
+                })
+                .collect(),
+            symbols: vec![],
+            diagnostics: vec![],
+        };
+
+        let result = search(&index, "odd\u{fffd}.rs", SearchKind::File, 20).unwrap();
+        assert!(result.matches.is_empty());
+    }
 }

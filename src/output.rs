@@ -119,10 +119,7 @@ struct TreeDto {
     warnings: Vec<WarningDto>,
 }
 fn relative(path: &Path) -> String {
-    path.iter()
-        .map(|p| p.to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/")
+    crate::paths::display_relative(path)
 }
 fn warnings(scan: &RepositoryScan) -> Vec<WarningDto> {
     let mut warnings: Vec<_> = scan

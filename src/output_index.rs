@@ -71,17 +71,17 @@ struct DiagnosticDto<'a> {
     range: Option<RangeDto>,
 }
 #[derive(Serialize)]
-struct SummaryDto {
-    discovered_files: usize,
-    supported_files: usize,
-    analyzable_files: usize,
-    analyzed_files: usize,
-    skipped_files: usize,
-    failed_files: usize,
-    syntax_error_files: usize,
-    syntax_error_count: usize,
-    symbols: usize,
-    statuses: BTreeMap<&'static str, usize>,
+pub(super) struct SummaryDto {
+    pub(super) discovered_files: usize,
+    pub(super) supported_files: usize,
+    pub(super) analyzable_files: usize,
+    pub(super) analyzed_files: usize,
+    pub(super) skipped_files: usize,
+    pub(super) failed_files: usize,
+    pub(super) syntax_error_files: usize,
+    pub(super) syntax_error_count: usize,
+    pub(super) symbols: usize,
+    pub(super) statuses: BTreeMap<&'static str, usize>,
 }
 #[derive(Serialize)]
 struct ReportDto<'a> {
@@ -103,7 +103,7 @@ struct ReportDto<'a> {
     diagnostics: Vec<DiagnosticDto<'a>>,
     scan_warnings: Vec<WarningDto>,
 }
-fn summary(index: &RepositoryIndex) -> SummaryDto {
+pub(super) fn summary(index: &RepositoryIndex) -> SummaryDto {
     let mut result = SummaryDto {
         discovered_files: index.files.len(),
         supported_files: 0,

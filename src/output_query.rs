@@ -1,11 +1,128 @@
 //! Command-specific schema-v1 adapters over query results.
 use super::{
     Envelope, MAX_JSON_BYTES, bounded_json, escape_controls,
-    graph::{EntityDto, RelationDto, entity, index_entity, label, relation},
+    graph::{
+        EntityDto, RelationDto, SummaryDto as GraphSummaryDto, entity, index_entity, label,
+        relation, summary as graph_summary,
+    },
+    index::{SummaryDto as AnalysisSummaryDto, summary as analysis_summary},
     relative,
 };
 use crate::{classify::FileRole, graph::*, model::RepositoryIndex, query::*};
 use serde::Serialize;
+
+const ID_SEMANTICS: &str = "index-local; canonical repository/file/symbol ordering; not stable across edits or lineage IDs";
+
+#[derive(Serialize)]
+struct CoverageDto {
+    file_analysis: AnalysisSummaryDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    graph_analysis: Option<GraphSummaryDto>,
+    analysis_incomplete: bool,
+    diagnostics_count: usize,
+    diagnostics_included: bool,
+    scan_warning_count: usize,
+    scan_warning_details_included: bool,
+    paths_may_be_lossy: bool,
+}
+
+#[derive(Serialize)]
+struct QueryContext {
+    root: String,
+    id_semantics: &'static str,
+    coverage: CoverageDto,
+}
+
+fn paths_may_be_lossy(index: &RepositoryIndex) -> bool {
+    index.root.to_str().is_none()
+        || index
+            .files
+            .iter()
+            .any(|file| file.relative_path.to_str().is_none())
+        || index
+            .git
+            .as_ref()
+            .is_some_and(|git| git.repository_root.to_str().is_none())
+        || index.scan_warnings.iter().any(|warning| {
+            warning
+                .path
+                .as_deref()
+                .is_some_and(|path| path.to_str().is_none())
+        })
+}
+
+fn query_context(index: &RepositoryIndex, graph: Option<&RepositoryGraph>) -> QueryContext {
+    let file_analysis = analysis_summary(index);
+    let graph_analysis = graph.map(graph_summary);
+    let paths_may_be_lossy = paths_may_be_lossy(index);
+    let relation_analysis_incomplete = graph_analysis.as_ref().is_some_and(|summary| {
+        summary
+            .relation_statuses
+            .iter()
+            .any(|(status, count)| *status != "analyzed" && *count > 0)
+    });
+    let analysis_incomplete = file_analysis.skipped_files > 0
+        || file_analysis.failed_files > 0
+        || !index.diagnostics.is_empty()
+        || !index.scan_warnings.is_empty()
+        || paths_may_be_lossy
+        || relation_analysis_incomplete;
+
+    QueryContext {
+        root: index.root.to_string_lossy().into_owned(),
+        id_semantics: ID_SEMANTICS,
+        coverage: CoverageDto {
+            file_analysis,
+            graph_analysis,
+            analysis_incomplete,
+            diagnostics_count: index.diagnostics.len(),
+            diagnostics_included: false,
+            scan_warning_count: index.scan_warnings.len(),
+            scan_warning_details_included: false,
+            paths_may_be_lossy,
+        },
+    }
+}
+
+fn human_context(index: &RepositoryIndex, graph: Option<&RepositoryGraph>) -> String {
+    let context = query_context(index, graph);
+    let coverage = context.coverage;
+    let summary = coverage.file_analysis;
+    let mut out = format!(
+        "Repository: {}\nIDs: {}\nAnalysis incomplete: {}\nFile analysis: discovered={} supported={} analyzable={} analyzed={} skipped={} failed={} syntax_error_files={} syntax_error_count={} symbols={} statuses={:?}\nDiagnostics details included: {} ({}); scan warning details included: {} ({}); paths may be lossy: {}\n",
+        escape_controls(&context.root),
+        context.id_semantics,
+        coverage.analysis_incomplete,
+        summary.discovered_files,
+        summary.supported_files,
+        summary.analyzable_files,
+        summary.analyzed_files,
+        summary.skipped_files,
+        summary.failed_files,
+        summary.syntax_error_files,
+        summary.syntax_error_count,
+        summary.symbols,
+        summary.statuses,
+        coverage.diagnostics_included,
+        coverage.diagnostics_count,
+        coverage.scan_warning_details_included,
+        coverage.scan_warning_count,
+        coverage.paths_may_be_lossy,
+    );
+    if let Some(summary) = coverage.graph_analysis {
+        out.push_str(&format!(
+            "Graph: entities={} relations={} resolved={} unresolved={} relation_statuses={:?} symbol_analysis_unavailable={} unsupported_candidates={}\n",
+            summary.entities,
+            summary.relations,
+            summary.resolved,
+            summary.unresolved,
+            summary.relation_statuses,
+            summary.symbol_analysis_unavailable,
+            summary.unsupported_candidates,
+        ));
+    }
+    out
+}
 
 fn json(command: &str, data: impl Serialize) -> Result<String, serde_json::Error> {
     bounded_json(
@@ -24,11 +141,13 @@ struct MatchDto<'a> {
 }
 #[derive(Serialize)]
 struct SearchDto<'a> {
+    #[serde(flatten)]
+    context: QueryContext,
     query: &'a str,
     kind: &'static str,
-    id_semantics: &'static str,
     matches: Vec<MatchDto<'a>>,
     truncated: bool,
+    non_utf8_file_paths_omitted: usize,
 }
 pub fn search_json(
     index: &RepositoryIndex,
@@ -39,9 +158,9 @@ pub fn search_json(
     json(
         "search",
         SearchDto {
+            context: query_context(index, None),
             query,
             kind: kind.name(),
-            id_semantics: "index-local; canonical repository/file/symbol ordering; not stable across edits",
             matches: result
                 .matches
                 .iter()
@@ -51,15 +170,44 @@ pub fn search_json(
                 })
                 .collect(),
             truncated: result.truncated,
+            non_utf8_file_paths_omitted: if matches!(kind, SearchKind::Symbol) {
+                0
+            } else {
+                index
+                    .files
+                    .iter()
+                    .filter(|file| file.relative_path.to_str().is_none())
+                    .count()
+            },
         },
     )
 }
-pub fn search_human(index: &RepositoryIndex, query: &str, result: &SearchResult) -> String {
-    let mut out = format!(
+pub fn search_human(
+    index: &RepositoryIndex,
+    query: &str,
+    kind: SearchKind,
+    result: &SearchResult,
+) -> String {
+    let mut out = human_context(index, None);
+    out.push_str(&format!(
         "Search: {}\ntruncated: {}\n",
         escape_controls(query),
         result.truncated
-    );
+    ));
+    let omitted = if matches!(kind, SearchKind::Symbol) {
+        0
+    } else {
+        index
+            .files
+            .iter()
+            .filter(|file| file.relative_path.to_str().is_none())
+            .count()
+    };
+    if omitted > 0 {
+        out.push_str(&format!(
+            "Non-UTF-8 file paths omitted from textual path search: {omitted}\n"
+        ));
+    }
     for m in &result.matches {
         let i = m.entity.0 as usize;
         let text = if i <= index.files.len() {
@@ -98,6 +246,8 @@ struct NeighborhoodRootDto<'a> {
 }
 #[derive(Serialize)]
 struct NeighborhoodDto<'a> {
+    #[serde(flatten)]
+    context: QueryContext,
     selector: &'a str,
     selector_kind: &'static str,
     match_mode: &'static str,
@@ -126,6 +276,7 @@ pub fn neighborhood_json(
     json(
         "neighborhood",
         NeighborhoodDto {
+            context: query_context(&g.index, Some(g)),
             selector,
             selector_kind: if file { "file" } else { "symbol" },
             match_mode: result.match_mode,
@@ -159,7 +310,8 @@ pub fn neighborhood_json(
 }
 pub fn neighborhood_human(g: &RepositoryGraph, selector: &str, result: &QueryResult) -> String {
     let owners = file_owners(g);
-    let mut out = format!(
+    let mut out = human_context(&g.index, Some(g));
+    out.push_str(&format!(
         "Neighborhood: {}\nmatch_mode: {} depth: {} roots_truncated: {} truncated: {}\n{}\n",
         escape_controls(selector),
         result.match_mode,
@@ -167,7 +319,7 @@ pub fn neighborhood_human(g: &RepositoryGraph, selector: &str, result: &QueryRes
         result.roots_truncated,
         result.truncated,
         TEST_NOTE
-    );
+    ));
     for r in &result.results {
         out.push_str(&format!(
             "Root: {} truncated: {}\n",
@@ -175,8 +327,18 @@ pub fn neighborhood_human(g: &RepositoryGraph, selector: &str, result: &QueryRes
             r.truncated
         ));
         for id in &r.entities {
+            let evidence = r.predecessors.get(id).map_or_else(
+                || "root".to_owned(),
+                |(predecessor, relation)| {
+                    format!(
+                        "predecessor #{} via relation #{}",
+                        predecessor.0, relation.0
+                    )
+                },
+            );
             out.push_str(&format!(
-                "  distance {}: {}\n",
+                "  visit #{} distance {}: {} ({evidence})\n",
+                id.0,
                 r.distances[id],
                 escape_controls(&label(g, *id))
             ));
@@ -196,10 +358,28 @@ pub fn neighborhood_human(g: &RepositoryGraph, selector: &str, result: &QueryRes
                 rel.resolution.name()
             ));
         }
-        out.push_str(&format!(
-            "  candidate test associations: {:?}\n",
-            test_entities(g, r, &owners)
-        ));
+        let associations = test_entities(g, r, &owners);
+        if associations.is_empty() {
+            out.push_str("  candidate test associations: none\n");
+        } else {
+            for id in associations {
+                let evidence = r.predecessors.get(&EntityId(id)).map_or_else(
+                    || "root".to_owned(),
+                    |(predecessor, relation)| {
+                        format!(
+                            "predecessor #{} via relation #{}",
+                            predecessor.0, relation.0
+                        )
+                    },
+                );
+                out.push_str(&format!(
+                    "  candidate test association: #{} {} distance {} ({evidence})\n",
+                    id,
+                    escape_controls(&label(g, EntityId(id))),
+                    r.distances[&EntityId(id)]
+                ));
+            }
+        }
     }
     out
 }
@@ -238,6 +418,8 @@ const FILE_RANK: &str = "structural_activity, incoming+outgoing resolved referen
 const METRIC_NOTE: &str = "Current syntactic graph only. Unresolved references do not contribute resolved centrality. Activity counts each non-containment occurrence once per associated file; same-file references contribute to both incoming and outgoing counts.";
 #[derive(Serialize)]
 struct HotspotDto<'a> {
+    #[serde(flatten)]
+    context: QueryContext,
     basis: &'static str,
     central_symbol_ranking: &'static str,
     file_ranking: &'static str,
@@ -252,6 +434,7 @@ pub fn hotspots_json(g: &RepositoryGraph, h: &Hotspots) -> Result<String, serde_
     json(
         "hotspots",
         HotspotDto {
+            context: query_context(&g.index, Some(g)),
             basis: "structural/current_graph",
             central_symbol_ranking: CENTRAL_RANK,
             file_ranking: FILE_RANK,
@@ -265,10 +448,11 @@ pub fn hotspots_json(g: &RepositoryGraph, h: &Hotspots) -> Result<String, serde_
     )
 }
 pub fn hotspots_human(g: &RepositoryGraph, h: &Hotspots) -> String {
-    let mut out = format!(
+    let mut out = human_context(&g.index, Some(g));
+    out.push_str(&format!(
         "Structural hotspots (current graph)\n{METRIC_NOTE}\nCentral ranking: {CENTRAL_RANK}\nFile ranking: {FILE_RANK}\nsymbols_truncated: {} files_truncated: {}\n",
         h.symbols_truncated, h.files_truncated
-    );
+    ));
     for (heading, ids) in [
         ("Central symbols", &h.symbols),
         ("Structural files", &h.files),
@@ -298,11 +482,22 @@ mod tests {
     #[test]
     fn new_dto_uses_shared_exact_and_over_escaped_byte_limit() {
         let dto = SearchDto {
+            context: query_context(
+                &RepositoryIndex {
+                    root: "/fixture".into(),
+                    git: None,
+                    scan_warnings: vec![],
+                    files: vec![],
+                    symbols: vec![],
+                    diagnostics: vec![],
+                },
+                None,
+            ),
             query: "\u{1b}é",
             kind: "all",
-            id_semantics: "index-local",
             matches: vec![],
             truncated: false,
+            non_utf8_file_paths_omitted: 0,
         };
         let rendered = json("search", &dto).unwrap();
         let envelope = Envelope {
@@ -312,5 +507,41 @@ mod tests {
         };
         assert_eq!(bounded_json(&envelope, rendered.len()).unwrap(), rendered);
         assert!(bounded_json(&envelope, rendered.len() - 1).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_output_reports_non_utf8_file_path_omissions() {
+        use crate::{
+            classify::{FileRole, Language},
+            model::{AnalysisStatus, FileAnalysis},
+        };
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf};
+
+        let index = RepositoryIndex {
+            root: "/fixture".into(),
+            git: None,
+            scan_warnings: vec![],
+            files: [b"odd\xff.rs", b"odd\xfe.rs"]
+                .into_iter()
+                .map(|path| FileAnalysis {
+                    relative_path: PathBuf::from(OsString::from_vec(path.to_vec())),
+                    language: Language::Rust,
+                    role: FileRole::Source,
+                    status: AnalysisStatus::Analyzed,
+                    symbol_count: 0,
+                    syntax_error_count: 0,
+                })
+                .collect(),
+            symbols: vec![],
+            diagnostics: vec![],
+        };
+        let result = crate::query::search(&index, "odd\u{fffd}.rs", SearchKind::File, 20).unwrap();
+        let output = search_json(&index, "odd\u{fffd}.rs", SearchKind::File, &result).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert!(value["data"]["matches"].as_array().unwrap().is_empty());
+        assert_eq!(value["data"]["non_utf8_file_paths_omitted"], 2);
+        assert_eq!(value["data"]["coverage"]["paths_may_be_lossy"], true);
+        assert_eq!(value["data"]["coverage"]["analysis_incomplete"], true);
     }
 }

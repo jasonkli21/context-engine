@@ -27,6 +27,20 @@ fn run(root: &Path, args: &[&str]) -> (Value, Vec<u8>) {
     assert_eq!(v["schema_version"], 1);
     (v["data"].clone(), bytes)
 }
+fn run_human(root: &Path, args: &[&str]) -> String {
+    String::from_utf8(
+        cargo_bin_cmd!("ctx")
+            .args(args)
+            .arg(root)
+            .args(["--format", "human"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap()
+}
 #[test]
 fn search_tiers_filters_bounds_and_determinism() {
     let d = fixture();
@@ -77,6 +91,11 @@ fn search_tiers_filters_bounds_and_determinism() {
             .unwrap()
             .is_empty()
     );
+    fs::create_dir_all(root.join("nested")).unwrap();
+    fs::write(root.join("nested/inner.py"), "def inner(): pass\n").unwrap();
+    let nested = run(root, &["search", "nested/inner.py", "--kind", "file"]).0;
+    assert_eq!(nested["matches"][0]["match_reason"], "exact_file_path");
+    assert_eq!(nested["matches"][0]["entity"]["path"], "nested/inner.py");
     fs::write(
         root.join("z.rs"),
         (0..201)
@@ -152,6 +171,29 @@ fn neighborhood_locality_distances_cycles_and_test_evidence() {
             path != "test_a.py"
         );
     }
+    let human = run_human(
+        root,
+        &["neighborhood", "--symbol", "helper", "--depth", "8"],
+    );
+    let test_association = human
+        .lines()
+        .find(|line| line.contains("candidate test association:") && line.contains("test_run"))
+        .unwrap();
+    let id = test_association
+        .split("association: #")
+        .nth(1)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap();
+    assert!(
+        human
+            .lines()
+            .any(|line| line.contains(&format!("visit #{id} distance")))
+    );
+    assert!(test_association.contains("test_a.py:"));
+    assert!(test_association.contains("predecessor #"));
+    assert!(test_association.contains("via relation #"));
     let v = run(root, &["neighborhood", "--file", "a.py", "--depth", "0"]).0;
     assert_eq!(v["results"][0]["entities"].as_array().unwrap().len(), 1);
     assert!(v["results"][0]["relations"].as_array().unwrap().is_empty());
@@ -224,6 +266,81 @@ fn metrics_distinct_counts_unresolved_activity_and_result_limits() {
     assert_eq!(v["central_symbols"].as_array().unwrap().len(), 200);
     assert_eq!(v["symbols_truncated"], true);
 }
+#[test]
+fn query_outputs_are_scoped_and_report_complete_analysis() {
+    let first = fixture();
+    let second = fixture();
+    let first_root = first.path().canonicalize().unwrap();
+
+    for data in [
+        run(first.path(), &["search", "helper"]).0,
+        run(first.path(), &["neighborhood", "--symbol", "helper"]).0,
+        run(first.path(), &["hotspots"]).0,
+    ] {
+        assert_eq!(data["root"], first_root.to_string_lossy().as_ref());
+        assert!(
+            data["id_semantics"]
+                .as_str()
+                .unwrap()
+                .contains("index-local")
+        );
+        assert_eq!(data["coverage"]["analysis_incomplete"], false);
+        assert_eq!(data["coverage"]["file_analysis"]["analyzed_files"], 3);
+        assert_eq!(data["coverage"]["file_analysis"]["skipped_files"], 0);
+        assert_eq!(data["coverage"]["file_analysis"]["failed_files"], 0);
+        assert_eq!(data["coverage"]["diagnostics_count"], 0);
+        assert_eq!(data["coverage"]["scan_warning_count"], 0);
+    }
+
+    let a = run(first.path(), &["search", "helper"]).0;
+    let b = run(second.path(), &["search", "helper"]).0;
+    assert_ne!(a["root"], b["root"]);
+
+    let human = run_human(first.path(), &["search", "helper"]);
+    assert!(human.contains(&format!("Repository: {}\n", first_root.display())));
+}
+
+#[test]
+fn empty_query_results_expose_skipped_and_failed_analysis() {
+    let skipped = fixture();
+    let search = run(
+        skipped.path(),
+        &["search", "helper", "--max-parse-file-size", "0"],
+    )
+    .0;
+    assert!(search["matches"].as_array().unwrap().is_empty());
+    assert_eq!(search["coverage"]["analysis_incomplete"], true);
+    assert_eq!(search["coverage"]["file_analysis"]["analyzed_files"], 0);
+    assert_eq!(search["coverage"]["file_analysis"]["skipped_files"], 3);
+    assert_eq!(search["coverage"]["file_analysis"]["failed_files"], 0);
+
+    let hotspots = run(skipped.path(), &["hotspots", "--max-parse-file-size", "0"]).0;
+    assert!(hotspots["central_symbols"].as_array().unwrap().is_empty());
+    assert!(hotspots["files"].as_array().unwrap().is_empty());
+    assert_eq!(hotspots["coverage"]["analysis_incomplete"], true);
+
+    let failed = TempDir::new().unwrap();
+    fs::write(failed.path().join("bad.py"), [0xff]).unwrap();
+    let result = run(failed.path(), &["search", "missing"]).0;
+    assert_eq!(result["coverage"]["analysis_incomplete"], true);
+    assert_eq!(result["coverage"]["file_analysis"]["failed_files"], 1);
+    assert_eq!(result["coverage"]["diagnostics_count"], 1);
+    assert_eq!(result["coverage"]["diagnostics_included"], false);
+    assert_eq!(result["coverage"]["scan_warning_details_included"], false);
+}
+
+#[cfg(unix)]
+#[test]
+fn human_query_root_control_characters_are_escaped() {
+    let d = tempfile::Builder::new().prefix("repo\n").tempdir().unwrap();
+    fs::write(d.path().join("a.rs"), "fn visible() {}\n").unwrap();
+    let root = d.path().canonicalize().unwrap();
+    let human = run_human(d.path(), &["search", "visible"]);
+    let escaped = root.to_string_lossy().replace('\n', "\\n");
+    assert!(human.contains(&format!("Repository: {escaped}\n")));
+    assert!(!human.contains(root.to_str().unwrap()));
+}
+
 #[test]
 fn validation_and_control_escaping() {
     for args in [

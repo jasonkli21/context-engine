@@ -409,7 +409,9 @@ Phase 3 search should be simple, deterministic, and explainable.
 
 Search:
 
-- file entities by scan-root-relative path;
+- file entities by the normalized `/`-separated scan-root-relative path emitted by
+  the CLI. Only UTF-8 paths participate in textual path matching; any omitted
+  non-UTF-8 file paths must be reported in output coverage context;
 - symbol entities by `qualified_name`;
 - symbol entities by local `name`.
 
@@ -785,6 +787,15 @@ Requirements:
 - query/path text rendered in human output is escaped too;
 - reuse the existing bounded JSON serialization path / 64 MiB ceiling;
 - output overflow fails before partial JSON reaches stdout.
+- every new query result identifies its analyzed root and states that entity IDs
+  are index-local and have no edit or lineage stability;
+- every new query result reports compact file-analysis coverage, diagnostic and
+  scan-warning counts, and explicit omission of their details; graph-backed
+  results also report relation-analysis status counts;
+- negative or sparse results expose skipped/failed analysis and relation failures
+  through an `analysis_incomplete` signal;
+- human neighborhood output names each candidate test entity and shows the visit
+  ID plus predecessor/relation evidence that makes the association traceable.
 
 Do not create a second unbounded JSON serializer for the new commands.
 

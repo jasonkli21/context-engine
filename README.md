@@ -64,6 +64,9 @@ qualified/local names through the index alone. It does not search source bodies.
 exact qualified symbol, exact local symbol, exact file path; then qualified/local/
 file prefix; then qualified/local/file substring. Each entity appears once with
 its strongest reason; ties use canonical file/symbol order. Zero matches succeed.
+File-path matching uses the same normalized `/`-separated representation shown in
+output. Non-UTF-8 file paths are omitted from textual path matching and counted in
+the result.
 
 `neighborhood (--symbol NAME | --file RELATIVE_PATH) [PATH]` requires exactly one
 selector. Symbols use exact qualified-first/local-fallback lookup, including
@@ -85,11 +88,18 @@ Activity counts a non-containment occurrence once per associated file; a same-fi
 reference contributes to both incoming and outgoing totals. Zero-evidence entries
 are omitted. Unresolved facts never contribute to resolved fan-in/fan-out.
 
+All three commands identify the analyzed root and index-local ID semantics, and
+report compact analysis coverage with an `analysis_incomplete` signal, file status
+counts, diagnostic and scan-warning counts, and relation-analysis statuses for
+graph-backed commands. Details for diagnostics and scan warnings are omitted and
+marked as such. Human neighborhood output names each candidate test entity and
+shows the visit ID and predecessor/relation evidence. Associations identify only
+reached test-role entities (including a test-role root); they are structural
+candidates, not coverage claims. Current same-file-only resolution means
+cross-file associations are generally absent.
+
 All three commands expose explicit truncation and schema-v1 JSON through the
-shared 64 MiB output ceiling. Neighborhood candidate test associations identify
-only reached test-role entities (including a test-role root), with predecessor and
-relation evidence. They are structural candidates, not coverage claims. Current
-same-file-only resolution means cross-file associations are generally absent.
+shared 64 MiB output ceiling.
 No history, semantic ranking, new resolution, or persistence is introduced.
 
 ### Scan semantics

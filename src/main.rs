@@ -6,6 +6,7 @@ mod index;
 mod language;
 mod model;
 mod output;
+mod paths;
 mod query;
 mod relations;
 mod scan;
@@ -120,7 +121,7 @@ fn options(args: &cli::AnalysisArgs) -> model::IndexOptions {
     model::IndexOptions {
         root: args.path.clone(),
         max_parse_file_bytes: args.max_parse_file_size,
-        probe_git: true,
+        probe_git: false,
     }
 }
 fn search_command(args: cli::SearchArgs) -> Result<String, Box<dyn std::error::Error>> {
@@ -128,7 +129,9 @@ fn search_command(args: cli::SearchArgs) -> Result<String, Box<dyn std::error::E
     let index = index::index_repository(&options(&args.analysis))?;
     let result = query::search(&index, &args.query, args.kind.into(), args.limit as usize)?;
     Ok(match args.analysis.format {
-        Format::Human => output::query::search_human(&index, &args.query, &result),
+        Format::Human => {
+            output::query::search_human(&index, &args.query, args.kind.into(), &result)
+        }
         Format::Json => output::query::search_json(&index, &args.query, args.kind.into(), &result)?,
     })
 }

@@ -137,16 +137,16 @@ struct DiagnosticDto<'a> {
     range: Option<RangeDto>,
 }
 #[derive(Serialize)]
-struct SummaryDto {
-    entities: usize,
-    relations: usize,
-    resolved: usize,
-    unresolved: usize,
-    relation_statuses: BTreeMap<&'static str, usize>,
-    symbol_analysis_unavailable: usize,
-    unsupported_candidates: usize,
+pub(super) struct SummaryDto {
+    pub(super) entities: usize,
+    pub(super) relations: usize,
+    pub(super) resolved: usize,
+    pub(super) unresolved: usize,
+    pub(super) relation_statuses: BTreeMap<&'static str, usize>,
+    pub(super) symbol_analysis_unavailable: usize,
+    pub(super) unsupported_candidates: usize,
 }
-fn summary(g: &RepositoryGraph) -> SummaryDto {
+pub(super) fn summary(g: &RepositoryGraph) -> SummaryDto {
     let mut statuses = BTreeMap::new();
     for f in &g.relation_files {
         *statuses.entry(f.status.name()).or_default() += 1;
