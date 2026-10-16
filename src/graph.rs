@@ -12,9 +12,9 @@ pub const MAX_ENTITIES: usize = 50_000;
 pub const MAX_RELATIONS: usize = 100_000;
 pub const MAX_RELATION_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_DEPTH: u8 = 8;
-const MAX_QUERY_ROOTS: usize = 128;
-const MAX_VISITED: usize = 10_000;
-const MAX_EMITTED: usize = 25_000;
+pub(crate) const MAX_QUERY_ROOTS: usize = 128;
+pub(crate) const MAX_VISITED: usize = 10_000;
+pub(crate) const MAX_EMITTED: usize = 25_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EntityId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -56,6 +56,12 @@ struct GraphLimits {
 }
 pub fn build(options: &IndexOptions) -> Result<RepositoryGraph, IndexError> {
     let (index, files) = index::graph_analysis(options)?;
+    from_analysis(index, files)
+}
+pub(crate) fn from_analysis(
+    index: RepositoryIndex,
+    files: Vec<FileRelations>,
+) -> Result<RepositoryGraph, IndexError> {
     construct(
         index,
         files,
@@ -66,6 +72,7 @@ pub fn build(options: &IndexOptions) -> Result<RepositoryGraph, IndexError> {
         },
     )
 }
+
 fn construct(
     index: RepositoryIndex,
     files: Vec<FileRelations>,
@@ -433,10 +440,10 @@ pub struct QueryResult {
     pub roots_truncated: bool,
 }
 #[derive(Clone, Copy)]
-struct TraversalLimits {
-    roots: usize,
-    visited: usize,
-    emitted: usize,
+pub(crate) struct TraversalLimits {
+    pub roots: usize,
+    pub visited: usize,
+    pub emitted: usize,
 }
 impl RepositoryGraph {
     pub fn query(
@@ -480,6 +487,16 @@ impl RepositoryGraph {
         } else {
             self.lookup_bounded(name, file, limits.roots.saturating_add(1))
         };
+        self.traverse_roots(kind, roots, depth, limits, match_mode)
+    }
+    pub(crate) fn traverse_roots(
+        &self,
+        kind: QueryKind,
+        roots: Vec<EntityId>,
+        depth: u8,
+        limits: TraversalLimits,
+        match_mode: &'static str,
+    ) -> QueryResult {
         let roots_truncated = roots.len() > limits.roots;
         let roots = roots.into_iter().take(limits.roots).collect();
         let mut result = QueryResult {

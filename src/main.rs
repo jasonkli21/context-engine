@@ -1,3 +1,4 @@
+mod change;
 mod classify;
 mod cli;
 mod git;
@@ -25,6 +26,8 @@ use std::{
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let rendered = match cli.command {
+        Command::Diff(args) => change_command("diff", args, None)?,
+        Command::Impact(args) => change_command("impact", args.change, Some(args.depth))?,
         Command::Search(args) => search_command(args)?,
         Command::Neighborhood(args) => neighborhood_command(args)?,
         Command::Hotspots(args) => hotspots_command(args)?,
@@ -209,4 +212,21 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn change_command(
+    command: &str,
+    args: cli::ChangeArgs,
+    depth: Option<u8>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let set = change::analyze(
+        &args.analysis.path,
+        &args.range,
+        args.analysis.max_parse_file_size,
+        depth,
+    )?;
+    Ok(match args.analysis.format {
+        Format::Human => output::change::human(command, &set),
+        Format::Json => output::change::json(command, &set)?,
+    })
 }

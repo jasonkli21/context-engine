@@ -12,11 +12,11 @@ The project is intentionally **descriptive rather than normative**. It aims to m
 
 ## Status
 
-**Pre-alpha / Phase 3 implemented; independent review pending.**
+**Pre-alpha / Phase 4 implemented; independent review pending.**
 The synchronous CLI scans repositories, indexes Rust/Python symbols, and builds a
 fresh in-memory graph of lexical containment, imports and call-site references.
-The maintainer authorized Phase 3 from the Phase 2 review-fix baseline; final
-independent Phase 1/2 dispositions remain pending.
+The maintainer authorized Phase 4 from the Phase 3 review-fix baseline; final
+independent Phase 1/2/3 dispositions remain pending.
 Phase 0 was accepted on 2026-10-14. Persistence, async, MCP, embeddings and model
 calls remain future work.
 
@@ -46,14 +46,72 @@ cargo build --release
 ./target/release/ctx neighborhood --symbol RepositoryGraph . --depth 2
 ./target/release/ctx neighborhood --file src/graph.rs . --format json
 ./target/release/ctx hotspots . --limit 10
+./target/release/ctx diff HEAD~1..HEAD . --format json
+./target/release/ctx impact HEAD~1..HEAD . --depth 2
 ```
 
 All commands default to the current directory and accept `--format human|json`.
 `scan` and `stats` also accept `--no-lines` and `--max-line-file-size <bytes>`
-(default 1 MiB). Every command performs a fresh scan. `scan` shows an overview;
+(default 1 MiB). Current-state commands perform a fresh scan; revision commands
+read immutable Git objects. `scan` shows an overview;
 `stats` adds per-language byte and line totals; `tree` lists alphabetically ordered
 relative paths, with `/` suffixes for directories. Tree does not read file contents
 or probe Git. Help and version: `ctx --help`, `ctx scan --help`, `ctx --version`.
+
+### Committed structural changes
+
+`diff BASE..HEAD [PATH]` compares two explicitly supplied committed revisions.
+`impact BASE..HEAD [PATH] --depth 0..8` adds bounded base/head graph neighborhoods
+(default depth 1). Both accept `--format human|json` and
+`--max-parse-file-size BYTES` (default 1 MiB). There is no implicit range,
+triple-dot, staged, untracked, or dirty-worktree mode. Git is required. `[PATH]`
+is an existing directory scope; nested scopes exclude sibling changes and emit
+scope-relative `/` paths. Endpoints resolve to full commit IDs before analysis.
+
+Diff analyzes changed file sides only. Impact builds both scoped committed tree
+inventories with the same Rust/Python analyzers and graph construction used by
+current-state commands. Tracked Git entries are inventoried regardless of checkout
+ignore rules. Source comes from raw blobs; checkout edits, filters, external diff,
+textconv and fsmonitor commands cannot contribute evidence. Neither command
+checks out revisions or writes Git/worktree state.
+
+File changes retain status, modes, object IDs and fixed Git rename evidence
+(`--find-renames=50%`, rename limit 10,000). A rename across a scope boundary
+appears as an addition/deletion inside that scope. Unique `(kind, qualified_name)`
+keys match within each file pair; exact source-slice differences identify modified
+symbols, including body edits. File renames and source-coordinate shifts alone
+do not imply symbol changes. Duplicate keys remain ambiguous; symbol renames are
+removed + added. Numeric IDs never establish cross-revision identity.
+
+Relations compare structural occurrence multisets, preserving resolution,
+metadata, derivation, counts and up to three example ranges per side. Moving a
+call/import without changing its meaning does not create churn. Unavailable or
+syntax-damaged file sides suppress symbol comparison; ambiguous symbols or
+incomplete relation extraction suppress relation comparison for that file pair.
+File changes always remain visible with status/coverage and unavailable-comparison
+counts. Non-UTF-8 native paths retain internal identity, are displayed lossily with
+explicit flags, and are omitted from structural parsing. Non-regular modes are
+reported without following symlinks or submodules.
+
+Impact seeds directly changed file entities and confidently changed symbols on
+the applicable side. Removed symbols use the base graph, added symbols use head,
+and modified symbols use both. Neighborhoods reuse the existing BFS, excluding
+repository containment. Visits carry distance, predecessor and relation evidence;
+seeds reference their file/symbol changes. Reached test-role entities and directly
+changed test/doc files are candidates, not test coverage or runtime predictions.
+Imports remain unresolved and references resolve only by the existing unique
+exact same-file qualified-name heuristic; cross-file results are usually sparse.
+
+Impact shares **128 roots, 10,000 visits and 25,000 relation occurrences across
+both revisions**, processing base first in canonical graph order. Omitted seed
+counts and root/traversal truncation are explicit. Fatal resource failures emit no
+partial JSON. Additional ceilings: 4 KiB range text; 10,000 changed records / 4 MiB
+path bytes; 16 MiB raw diff; 50,000 inventory records / 4 MiB path bytes / 16 MiB
+raw tree output per revision; 256 MiB loaded source per revision. Diff enumeration
+is repository-wide before scope filtering to retain cross-boundary rename evidence,
+so unrelated changes can exhaust its safety ceiling. Existing analyzer/graph limits
+and the 64 MiB bounded schema-v1 JSON writer still apply. Identical inputs and
+options produce deterministic output; an empty change set succeeds.
 
 ### Query and repository intelligence
 

@@ -73,6 +73,34 @@ fn analyze_scan_with_limits(
     graph: bool,
     limits: RepositoryLimits,
 ) -> Result<(RepositoryIndex, Vec<crate::relations::FileRelations>), IndexError> {
+    analyze_with_loader(
+        scan,
+        max_parse_file_bytes,
+        graph,
+        limits,
+        |root, file, max| source::load(root, &file.relative_path, max),
+    )
+}
+pub(crate) fn analyze_loaded<F>(
+    scan: RepositoryScan,
+    max: u64,
+    loader: F,
+) -> Result<(RepositoryIndex, Vec<crate::relations::FileRelations>), IndexError>
+where
+    F: FnMut(&std::path::Path, &FileRecord, u64) -> Result<String, AnalysisStatus>,
+{
+    analyze_with_loader(scan, max, true, REPOSITORY_LIMITS, loader)
+}
+fn analyze_with_loader<F>(
+    scan: RepositoryScan,
+    max_parse_file_bytes: u64,
+    graph: bool,
+    limits: RepositoryLimits,
+    mut loader: F,
+) -> Result<(RepositoryIndex, Vec<crate::relations::FileRelations>), IndexError>
+where
+    F: FnMut(&std::path::Path, &FileRecord, u64) -> Result<String, AnalysisStatus>,
+{
     let (mut name_bytes, mut detail_bytes) = (0usize, 0usize);
     let mut relation_bytes = scan
         .files
@@ -112,7 +140,7 @@ fn analyze_scan_with_limits(
             } else if file.size_bytes > max_parse_file_bytes {
                 analysis.status = AnalysisStatus::TooLarge;
             } else {
-                match source::load(&index.root, &file.relative_path, max_parse_file_bytes) {
+                match loader(&index.root, &file, max_parse_file_bytes) {
                     Ok(text) => match if graph {
                         analyzer.analyze_graph(&file.relative_path, &text)
                     } else {

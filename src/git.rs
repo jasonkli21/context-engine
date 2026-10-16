@@ -187,3 +187,6 @@ pub fn probe(root: &Path) -> (Option<GitMetadata>, Vec<ScanWarning>) {
         warnings,
     )
 }
+
+#[path = "git_revision.rs"]
+pub(crate) mod revision;

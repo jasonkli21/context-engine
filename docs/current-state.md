@@ -2,11 +2,25 @@
 
 **Last updated:** 2026-10-15
 
-**Active phase:** Phase 3 — Query and Repository Intelligence
+**Active phase:** Phase 4 — Git and Structural Change Intelligence
 
-**Overall status:** Phase 3 review findings fixed and locally verified; independent re-review pending
+**Overall status:** Phase 4 implemented and locally verified; fresh independent review pending
 
 ## Delivered
+
+- Phase 4 `diff BASE..HEAD` and `impact BASE..HEAD` read bounded committed Git
+  snapshots, resolve immutable commits, honor nested scopes, and ignore dirty
+  checkout content. Fixed Git rename evidence and file modes/object IDs remain
+  visible even when structural comparison is unavailable.
+- Unique file-paired kind/qualified-name symbol matching with source-slice body
+  comparison; explicit ambiguity, fail-closed incomplete comparisons and relation
+  occurrence multiset deltas without numeric-ID lineage or range-shift churn.
+- Revision graphs reuse the existing analyzer/graph pipeline. Impact reuses BFS
+  with exact revision-local seeds, distance/predecessor evidence, reached test
+  candidates, directly changed test/docs and shared base/head safety budgets.
+- New escaped human and bounded schema-v1 JSON outputs expose revision/scope,
+  analysis coverage, unavailable comparisons, omitted seeds and truncation.
+
 
 - Phase 3 index-only deterministic path/symbol `search`, generalized bounded
   `neighborhood` with per-root distances/predecessor evidence and repository-hub
@@ -32,7 +46,8 @@
   text, record and output limits; explicit query root omission accounting;
   relation-file accounting alongside every file's Phase 1 analysis status.
 
-Evidence: [Phase 3 report](reports/phase-3-implementation-report.md),
+Evidence: [Phase 4 report](reports/phase-4-implementation-report.md),
+[Phase 3 report](reports/phase-3-implementation-report.md),
 [Phase 3 review-fix report](reports/phase-3-review-fix-report.md),
 [independent Phase 3 review](reviews/phase-3-independent-review.md),
 [Phase 0 report](reports/phase-0-implementation-report.md),
@@ -44,6 +59,17 @@ Evidence: [Phase 3 report](reports/phase-3-implementation-report.md),
 [Phase 2 review-fix report](reports/phase-2-review-fix-report.md).
 
 ## Acceptance and verification
+
+- The maintainer directly authorized Phase 4 from `865f5a4` while Phase 3 fresh
+  re-review and Phase 1/2 final dispositions remain pending. Authorization does
+  not constitute independent acceptance.
+- Phase 4 canonical verifier passed: 57 unit and 50 integration tests, including
+  all prior suites. All-target check, release build and diff whitespace checks
+  passed. Eight release smoke invocations covered both commands and formats on
+  a deterministic dirty-worktree Git fixture and the real Phase 3 fix range.
+  Existing isolated macOS toolchain reused; no global setup changed. See report
+  for observations, bounds, conservative omissions and audit evidence.
+
 
 - The maintainer explicitly authorized Phase 3 from `09efd22` while final
   independent Phase 1/2 dispositions remain pending. This is not acceptance.
@@ -76,10 +102,22 @@ Evidence: [Phase 3 report](reports/phase-3-implementation-report.md),
 
 ## Known limitations
 
+Phase 4 is committed two-dot comparison only, with no working-tree/triple-dot,
+compiler-grade impact, symbol-rename lineage or cross-file binding. Diff analyzes
+changed sides only; impact inventories tracked scoped trees regardless of checkout
+ignore rules. Incomplete/syntax-damaged sides suppress symbol comparison;
+ambiguity/incomplete relation extraction suppresses relation comparison for that
+file pair. Impact includes changed-file neighborhoods, processes base first, and
+shares 128 roots / 10,000 visits / 25,000 relation occurrences across both sides.
+Repository-wide diff enumeration precedes scope filtering to retain cross-boundary
+rename evidence, so unrelated changes can exhaust the diff safety ceiling.
+
+
 Imports remain unresolved. Unqualified method/nested calls remain unresolved
 unless their syntax exactly matches a unique qualified name. Call-site references
 and same-file matches are syntax heuristics, not binding/type/dispatch or compiler guarantees. IDs are index-local
-and may renumber across edits. Graphs are rebuilt per command; no persistence,
+and may renumber across edits. Current-state graphs are rebuilt per command; revision commands build immutable
+Git-object models. No persistence,
 concurrency, async, MCP, embeddings, model calls or policy behavior exists.
 Relation budgets discard a failed file's extracted facts while retaining valid
 symbols and structural containment. Queries expose truncation on safety overflow.
@@ -90,7 +128,7 @@ filesystem TOCTOU races remain; results are not atomic snapshots.
 
 ## Next step
 
-Fresh independent review of the Phase 3 fixes, followed by any further findings
-and final disposition. Phase 1/2 final independent disposition also remains
-pending.
-Local verification does not constitute independent acceptance of any phase.
+Fresh independent Phase 4 review, findings/fixes and final disposition. Phase 3
+fixes still require fresh independent re-review; Phase 1/2 final independent
+dispositions also remain pending. Local verification does not constitute
+independent acceptance of any phase.

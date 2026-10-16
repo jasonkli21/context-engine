@@ -17,6 +17,10 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Compare structure in two committed revisions.
+    Diff(ChangeArgs),
+    /// Traverse prior/current structural neighbors of committed changes.
+    Impact(ImpactArgs),
     /// Search file paths and symbol names (case-sensitive metadata search).
     Search(SearchArgs),
     /// Explore local syntax evidence without crossing the repository containment hub.
@@ -154,4 +158,19 @@ impl From<SearchKindArg> for crate::query::SearchKind {
             SearchKindArg::File => Self::File,
         }
     }
+}
+
+#[derive(Debug, Args)]
+pub struct ChangeArgs {
+    /// Explicit BASE..HEAD commit range (no triple-dot or working-tree mode).
+    pub range: String,
+    #[command(flatten)]
+    pub analysis: AnalysisArgs,
+}
+#[derive(Debug, Args)]
+pub struct ImpactArgs {
+    #[command(flatten)]
+    pub change: ChangeArgs,
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(0..=crate::graph::MAX_DEPTH as i64))]
+    pub depth: u8,
 }

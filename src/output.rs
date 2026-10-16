@@ -416,3 +416,6 @@ fn bounded_json(value: &impl Serialize, limit: usize) -> Result<String, serde_js
 
 #[path = "output_query.rs"]
 pub mod query;
+
+#[path = "output_change.rs"]
+pub mod change;
