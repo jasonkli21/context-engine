@@ -8,6 +8,10 @@ use std::{
 };
 
 pub fn load(root: &Path, relative: &Path, max: u64) -> Result<String, AnalysisStatus> {
+    String::from_utf8(load_raw(root, relative, max)?).map_err(|_| AnalysisStatus::InvalidUtf8)
+}
+
+pub(crate) fn load_raw(root: &Path, relative: &Path, max: u64) -> Result<Vec<u8>, AnalysisStatus> {
     if relative.as_os_str().is_empty()
         || relative
             .components()
@@ -35,6 +39,34 @@ pub fn load(root: &Path, relative: &Path, max: u64) -> Result<String, AnalysisSt
     if meta.len() > max {
         return Err(AnalysisStatus::TooLarge);
     }
+    // Open each component relative to a held directory descriptor: parent swaps
+    // cannot redirect this read through a symlink outside the scan root.
+    #[cfg(unix)]
+    let file: File = {
+        use rustix::fs::{Mode, OFlags, open, openat};
+        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let mut dir = open(root, flags | OFlags::DIRECTORY, Mode::empty())
+            .map_err(|_| AnalysisStatus::ReadFailed)?;
+        let parts: Vec<_> = relative.components().collect();
+        for part in &parts[..parts.len() - 1] {
+            dir = openat(
+                &dir,
+                part.as_os_str(),
+                flags | OFlags::DIRECTORY,
+                Mode::empty(),
+            )
+            .map_err(|_| AnalysisStatus::ReadFailed)?;
+        }
+        openat(
+            &dir,
+            parts.last().unwrap().as_os_str(),
+            flags | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|_| AnalysisStatus::ReadFailed)?
+        .into()
+    };
+    #[cfg(not(unix))]
     let file = File::open(&path).map_err(|_| AnalysisStatus::ReadFailed)?;
     let opened = file.metadata().map_err(|_| AnalysisStatus::ReadFailed)?;
     if !opened.is_file() {
@@ -43,9 +75,13 @@ pub fn load(root: &Path, relative: &Path, max: u64) -> Result<String, AnalysisSt
     if opened.len() > max {
         return Err(AnalysisStatus::TooLarge);
     }
-    bounded_utf8(file, max)
+    bounded_bytes(file, max)
 }
+#[cfg(test)]
 fn bounded_utf8(reader: impl Read, max: u64) -> Result<String, AnalysisStatus> {
+    String::from_utf8(bounded_bytes(reader, max)?).map_err(|_| AnalysisStatus::InvalidUtf8)
+}
+fn bounded_bytes(reader: impl Read, max: u64) -> Result<Vec<u8>, AnalysisStatus> {
     let mut bytes = Vec::new();
     reader
         .take(max.saturating_add(1))
@@ -54,7 +90,7 @@ fn bounded_utf8(reader: impl Read, max: u64) -> Result<String, AnalysisStatus> {
     if bytes.len() as u64 > max {
         return Err(AnalysisStatus::TooLarge);
     }
-    String::from_utf8(bytes).map_err(|_| AnalysisStatus::InvalidUtf8)
+    Ok(bytes)
 }
 #[cfg(test)]
 mod tests {

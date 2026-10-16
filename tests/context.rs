@@ -1,6 +1,7 @@
-use assert_cmd::cargo::cargo_bin_cmd;
+mod support;
 use serde_json::Value;
 use std::{fs, path::Path, process::Command};
+use support::ctx;
 use tempfile::TempDir;
 fn write(root: &Path, path: &str, text: impl AsRef<[u8]>) {
     let path = root.join(path);
@@ -8,7 +9,7 @@ fn write(root: &Path, path: &str, text: impl AsRef<[u8]>) {
     fs::write(path, text).unwrap();
 }
 fn run(root: &Path, task: &str, budget: &str, extra: &[&str]) -> (Value, Vec<u8>) {
-    let bytes = cargo_bin_cmd!("ctx")
+    let bytes = ctx()
         .arg("context")
         .arg(root)
         .args(["--task", task, "--budget", budget, "--format", "json"])
@@ -24,7 +25,7 @@ fn run(root: &Path, task: &str, budget: &str, extra: &[&str]) -> (Value, Vec<u8>
     (v["data"].clone(), bytes)
 }
 fn rejects(root: &Path, task: &str, budget: &str, extra: &[&str], error: &str) {
-    let out = cargo_bin_cmd!("ctx")
+    let out = ctx()
         .arg("context")
         .arg(root)
         .args(["--task", task, "--budget", budget, "--format", "json"])
@@ -89,7 +90,7 @@ fn cli_schema_determinism_exact_bytes_skips_and_content_controls() {
         "a\n\t\x1b[31m\r\x07\u{009b} selected files: fake\n--- end content ---",
     );
     let text = String::from_utf8(
-        cargo_bin_cmd!("ctx")
+        ctx()
             .arg("context")
             .arg(d.path())
             .args(["--task", "needle", "--budget", "500"])

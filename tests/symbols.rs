@@ -1,7 +1,8 @@
-use assert_cmd::cargo::cargo_bin_cmd;
+mod support;
 use predicates::prelude::*;
 use serde_json::Value;
 use std::{fs, path::Path};
+use support::ctx;
 use tempfile::TempDir;
 fn write(root: &Path, path: &str, data: &[u8]) {
     let path = root.join(path);
@@ -9,7 +10,7 @@ fn write(root: &Path, path: &str, data: &[u8]) {
     fs::write(path, data).unwrap();
 }
 fn run(root: &Path, command: &str, query: Option<&str>, flags: &[&str]) -> (Value, Vec<u8>) {
-    let mut cmd = cargo_bin_cmd!("ctx");
+    let mut cmd = ctx();
     cmd.arg(command);
     if let Some(query) = query {
         cmd.arg(query);
@@ -84,7 +85,7 @@ fn mixed_index_statuses_counts_and_determinism() {
             .iter()
             .all(|d| d["path"].is_string())
     );
-    cargo_bin_cmd!("ctx")
+    ctx()
         .args(["index"])
         .arg(root)
         .args(flags)
@@ -192,13 +193,13 @@ fn lookup_modes_multiple_matches_ranges_and_no_fuzzy_search() {
     let (v, _) = run(root, "symbol", Some("method"), &[]);
     assert_eq!(v["data"]["match_mode"], "qualified_name");
     assert_eq!(v["data"]["matches"].as_array().unwrap().len(), 1);
-    cargo_bin_cmd!("ctx")
+    ctx()
         .args(["symbol", "missing"])
         .arg(root)
         .assert()
         .success()
         .stdout(predicate::str::contains("0 matches"));
-    cargo_bin_cmd!("ctx")
+    ctx()
         .args(["symbol", "A.method"])
         .arg(root)
         .assert()
@@ -210,7 +211,7 @@ fn help_defaults_and_size_flags() {
     let dir = TempDir::new().unwrap();
     write(dir.path(), "empty.rs", b"");
     for command in ["index", "symbols", "symbol"] {
-        let help = cargo_bin_cmd!("ctx")
+        let help = ctx()
             .args([command, "--help"])
             .assert()
             .success()
@@ -221,9 +222,9 @@ fn help_defaults_and_size_flags() {
         assert!(help.contains("--max-parse-file-size"));
         assert!(help.contains("--format"));
         if command == "index" {
-            assert!(help.contains("fresh in-memory"));
+            assert!(help.contains("persistent index"));
         }
-        let mut cmd = cargo_bin_cmd!("ctx");
+        let mut cmd = ctx();
         cmd.current_dir(dir.path()).arg(command);
         if command == "symbol" {
             cmd.arg("missing");
@@ -235,7 +236,7 @@ fn help_defaults_and_size_flags() {
     write(dir.path(), "large.rs", &vec![b' '; 1_048_577]);
     let (value, _) = run(dir.path(), "index", None, &[]);
     assert_eq!(value["data"]["summary"]["statuses"]["too_large"], 1);
-    cargo_bin_cmd!("ctx")
+    ctx()
         .args(["index", "--max-parse-file-size", "-1"])
         .assert()
         .failure();
@@ -265,7 +266,7 @@ fn no_source_execution_or_body_output_and_duplicates_preserved() {
         if command == "symbol" {
             assert_eq!(value["data"]["matches"].as_array().unwrap().len(), 2);
         }
-        let mut cmd = cargo_bin_cmd!("ctx");
+        let mut cmd = ctx();
         cmd.arg(command);
         if let Some(query) = query {
             cmd.arg(query);
@@ -294,7 +295,7 @@ fn symlinks_and_human_controls() {
     let (value, _) = run(dir.path(), "index", None, &[]);
     assert_eq!(value["data"]["summary"]["discovered_files"], 1);
     for command in ["index", "symbols", "symbol"] {
-        let mut cmd = cargo_bin_cmd!("ctx");
+        let mut cmd = ctx();
         cmd.arg(command);
         if command == "symbol" {
             cmd.arg("safe\n\u{1b}");

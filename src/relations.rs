@@ -2,10 +2,15 @@
 use crate::{classify::Language, model::SourceRange};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord,
+)]
 pub enum RelationKind {
+    #[serde(rename = "contains")]
     Contains,
+    #[serde(rename = "imports")]
     Imports,
+    #[serde(rename = "references")]
     References,
 }
 impl RelationKind {
@@ -17,13 +22,21 @@ impl RelationKind {
         }
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord,
+)]
 pub enum Derivation {
+    #[serde(rename = "repository_contains_file")]
     RepositoryContainsFile,
+    #[serde(rename = "lexical_range_containment")]
     LexicalRangeContainment,
+    #[serde(rename = "rust_use_syntax")]
     RustUseSyntax,
+    #[serde(rename = "python_import_syntax")]
     PythonImportSyntax,
+    #[serde(rename = "rust_call_syntax")]
     RustCallSyntax,
+    #[serde(rename = "python_call_syntax")]
     PythonCallSyntax,
 }
 impl Derivation {
@@ -53,20 +66,24 @@ impl Resolution {
         }
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord,
+)]
 pub enum ReferenceContext {
+    #[serde(rename = "call")]
     Call,
 }
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Metadata {
+    #[serde(rename = "none")]
     None,
+    #[serde(rename = "import")]
     Import {
         binding: Option<String>,
         wildcard: bool,
     },
-    Reference {
-        context: ReferenceContext,
-    },
+    #[serde(rename = "reference")]
+    Reference { context: ReferenceContext },
 }
 #[derive(Debug)]
 pub struct Evidence {
@@ -75,7 +92,7 @@ pub struct Evidence {
     pub language: Option<Language>,
     pub derivation: Derivation,
 }
-#[derive(Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct Candidate {
     pub kind: RelationKind,
     pub target: String,
@@ -83,10 +100,13 @@ pub struct Candidate {
     pub metadata: Metadata,
     pub derivation: Derivation,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelationStatus {
+    #[serde(rename = "analyzed")]
     Analyzed,
+    #[serde(rename = "extraction_failed")]
     ExtractionFailed,
+    #[serde(rename = "analysis_limit_exceeded")]
     AnalysisLimitExceeded,
 }
 impl RelationStatus {
@@ -98,7 +118,7 @@ impl RelationStatus {
         }
     }
 }
-#[derive(Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct Extraction {
     pub status: RelationStatus,
     pub candidates: Vec<Candidate>,

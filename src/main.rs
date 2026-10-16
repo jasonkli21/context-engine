@@ -9,10 +9,12 @@ mod language;
 mod model;
 mod output;
 mod paths;
+mod persistence;
 mod query;
 mod relations;
 mod scan;
 mod source;
+mod store;
 
 use crate::{
     cli::{Cli, Command, Format, PathArgs, TreeArgs},
@@ -73,11 +75,15 @@ fn analyze(
     args: cli::AnalysisArgs,
     query: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let index = index::index_repository(&model::IndexOptions {
-        root: args.path,
-        max_parse_file_bytes: args.max_parse_file_size,
-        probe_git: true,
-    })?;
+    let index = persistence::load_or_build(
+        &model::IndexOptions {
+            root: args.path,
+            max_parse_file_bytes: args.max_parse_file_size,
+            probe_git: true,
+        },
+        command == "index",
+    )?
+    .index;
     Ok(match args.format {
         Format::Human => output::index_human(command, &index, query),
         Format::Json => output::index_json(command, &index, query)?,
@@ -99,7 +105,7 @@ fn graph_command(
     args: cli::AnalysisArgs,
     query: Option<(&str, Option<&std::path::Path>, u8)>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let graph = graph::build(&model::IndexOptions {
+    let graph = persistence::graph(&model::IndexOptions {
         root: args.path,
         max_parse_file_bytes: args.max_parse_file_size,
         probe_git: true,
@@ -131,7 +137,7 @@ fn options(args: &cli::AnalysisArgs) -> model::IndexOptions {
 }
 fn search_command(args: cli::SearchArgs) -> Result<String, Box<dyn std::error::Error>> {
     query::validate_query(&args.query)?;
-    let index = index::index_repository(&options(&args.analysis))?;
+    let index = persistence::load_or_build(&options(&args.analysis), false)?.index;
     let result = query::search(&index, &args.query, args.kind.into(), args.limit as usize)?;
     Ok(match args.analysis.format {
         Format::Human => {
@@ -157,7 +163,7 @@ fn neighborhood_command(args: cli::NeighborhoodArgs) -> Result<String, Box<dyn s
         .as_deref()
         .map(str::to_owned)
         .unwrap_or_else(|| args.file.as_ref().unwrap().to_string_lossy().into_owned());
-    let g = graph::build(&options(&args.analysis))?;
+    let g = persistence::graph(&options(&args.analysis))?;
     let result = g.query(
         graph::QueryKind::Neighborhood,
         &selector,
@@ -172,7 +178,7 @@ fn neighborhood_command(args: cli::NeighborhoodArgs) -> Result<String, Box<dyn s
     })
 }
 fn hotspots_command(args: cli::HotspotArgs) -> Result<String, Box<dyn std::error::Error>> {
-    let g = graph::build(&options(&args.analysis))?;
+    let g = persistence::graph(&options(&args.analysis))?;
     let result = query::hotspots(&g, args.limit as usize)?;
     Ok(match args.analysis.format {
         Format::Human => output::query::hotspots_human(&g, &result),
@@ -238,7 +244,7 @@ fn context_command(args: cli::ContextArgs) -> Result<String, Box<dyn std::error:
     context::validate_budget(args.budget)?;
     let mut opts = options(&args.analysis);
     opts.probe_git = true;
-    let g = graph::build(&opts)?;
+    let g = persistence::graph(&opts)?;
     let changes = args
         .change
         .as_deref()

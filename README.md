@@ -14,7 +14,8 @@ The project is intentionally **descriptive rather than normative**. It aims to m
 
 **Pre-alpha / Phase 5 implemented; independent review pending.**
 The synchronous CLI scans repositories, indexes Rust/Python symbols, and builds a
-fresh in-memory graph of lexical containment, imports and call-site references.
+canonical in-memory graph of lexical containment, imports and call-site references,
+reusing a validated external analysis cache.
 The maintainer authorized Phase 5 from the Phase 4 review-fix baseline; final
 independent Phase 1/2/3/4 dispositions remain pending.
 Phase 0 was accepted on 2026-10-14. Persistence, async, MCP, embeddings and model
@@ -214,7 +215,7 @@ cross-file associations are generally absent.
 
 All three commands expose explicit truncation and schema-v1 JSON through the
 shared 64 MiB output ceiling.
-No history, semantic ranking, new resolution, or persistence is introduced.
+This query layer introduces no history, semantic ranking or new resolution.
 
 ### Scan semantics
 
@@ -267,8 +268,9 @@ No history, semantic ranking, new resolution, or persistence is introduced.
 ### Syntax and symbol indexing
 
 `index`, `symbols` and `symbol <NAME>` reuse the canonical scanner with line
-counting disabled and optional safe Git metadata. Each command builds a fresh
-in-memory index. Nothing is saved to `.ctx/` or any cache. These commands accept
+counting disabled and optional safe Git metadata. `index` forces a fresh analysis
+and commits the persistent cache; `symbols` and `symbol` reuse compatible fresh
+analysis or rebuild it. These commands accept
 `--max-parse-file-size <BYTES>` (default 1 MiB), separately from scan line counting.
 
 - Rust: modules, structs, enums, unions, traits, functions, impl/trait methods,
@@ -312,13 +314,42 @@ in-memory index. Nothing is saved to `.ctx/` or any cache. These commands accept
 - Human symbol locations use one-based lines and byte columns at the symbol name.
   All repository-controlled human text has control characters escaped.
 
+### Persistent analysis (Phase 6)
+
+Current-state `index`, `symbols`, `symbol`, `graph`, `deps`, `callers`, `related`,
+`search`, `neighborhood`, `hotspots` and `context` share a SQLite analysis cache.
+`index` always rebuilds and only succeeds after the cache is committed. Other
+commands rebuild missing, stale, incompatible or corrupt caches; a write failure
+may return freshly computed results with a warning on stderr. JSON stdout stays clean.
+`scan`, `stats`, `tree`, `diff` and `impact` retain their separate live/revision paths.
+`context --change` retains its clean/current-HEAD compatibility checks.
+
+The default location is `<platform-cache>/context-engine/indexes/<key>.sqlite3`.
+Set `CONTEXT_ENGINE_CACHE_DIR=/absolute/external/path` to override the cache base
+(the database remains under `indexes/`). Paths beneath the analyzed root are
+rejected before creation. The key uses lossless canonical root bytes and the parse
+file limit. Schema v1, analysis compatibility v1 and `freshness-v1` are explicit.
+Only structural analysis is stored: file records, symbols, diagnostics and relation
+candidates. No source bodies, graph IDs, adjacency or query/ranking results are saved.
+
+Every hit scans current inventory and hashes eligible Rust/Python source bytes;
+same-length edits invalidate it. Generated/vendor and over-limit source bodies
+are excluded, but inventory paths, classifications and sizes are fingerprinted.
+Freshness reads reserve at most 256 MiB including growth probes. Unreadable eligible
+source fails freshness. Rebuilds compare pre/post inventories and hashes and retry
+once on change; a second change fails without replacement. Store reads enforce
+128 MiB database, 32 MiB encoded payload and existing structural aggregate limits.
+Git metadata and scan warnings stay live. Filesystem results remain non-atomic.
+Phase 7 file-level incremental indexing and watchers remain future work.
+
 ### Repository relationship graph
 
-`graph`, `deps <NAME>`, `callers <NAME>` and `related <NAME>` rebuild a synchronous,
-in-memory graph per command using the same scanner, loading protections and
+`graph`, `deps <NAME>`, `callers <NAME>` and `related <NAME>` reconstruct a synchronous,
+in-memory graph from validated analysis using the same scanner, loading protections and
 `--max-parse-file-size` limit as symbol indexing. Symbols and relation candidates
-come from one loaded source and one parse tree per analyzed file. Symbol-only
-commands skip relation work. No target source is executed.
+come from one loaded source and one parse tree per analyzed file on a cold build.
+All current intelligence commands share the graph-capable analysis artifact.
+No target source is executed.
 
 - Entities are the repository, every scanned file, and each canonical symbol
   record. Symbol identity is structural (file, kind, declaration range), separate
@@ -375,7 +406,7 @@ commands skip relation work. No target source is executed.
   These are safety ceilings, not performance promises.
 
 `graph` human output is a count summary; JSON includes the full graph. These
-commands have no persistence, caching, cross-file import resolution or compiler
+commands reuse persisted analysis, with no cross-file import resolution or compiler
 integration. Existing filesystem snapshot and Git-metadata limitations apply.
 
 ### JSON schema v1
@@ -447,7 +478,7 @@ not an identity for exact dirty working-tree content.
 
 ## Future direction
 
-Later phases may add persistence, incremental updates, history/co-change signals,
+Later phases may add incremental updates, history/co-change signals,
 service adapters and cross-repository context. These capabilities are not implemented.
 
 ## Why Rust?

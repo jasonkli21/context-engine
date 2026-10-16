@@ -23,8 +23,12 @@ thiserror = "2"
 tree-sitter = "0.27.1"
 tree-sitter-python = "0.25.0"
 tree-sitter-rust = "0.24.2"
+rusqlite = { version = "0.38", features = ["bundled", "limits"] }
+blake3 = "1"
+dirs = "6"
+rustix = { version = "1", features = ["fs"] }
+tempfile = "3"
 
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
-tempfile = "3"

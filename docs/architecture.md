@@ -528,35 +528,45 @@ Persistence is a later concern and should be selected from real query patterns r
 
 ---
 
-## 20. Future persistence / incremental architecture
+## 20. Persistent analysis and future incremental architecture
 
-Persistence begins only after repeated rebuild cost is demonstrated.
+Phase 6 stores the established `RepositoryIndex` structural records plus per-file
+`FileRelations` extraction. `persistence.rs` owns freshness and load/build
+composition; `store.rs` owns SQLite schema v1 and record codecs. Graph commands
+always reconstruct through `graph::from_analysis`. No graph IDs, adjacency, query
+results, ranking results or source bodies are persisted. Rendering has no storage
+or discovery dependency.
 
-Candidate direction:
+SQLite uses bundled `rusqlite`, foreign keys, a two-second busy timeout, bounded
+record reads and transactional replacement. A complete sibling temporary database
+is committed and synced before atomic replacement; failed writes preserve the
+prior committed artifact. Incompatible/corrupt databases rebuild without migration.
+Schema v1, `INDEX_COMPAT_VERSION=1` and `freshness-v1` are separate contracts.
+Stable named JSON records occupy normalized file/symbol/diagnostic/extraction/
+candidate rows; paths are BLOBs with `unix_bytes_v1` or `windows_wide_le_v1`.
+Ordinals are internal serialization positions, never stable graph identity.
 
-- SQLite for durable metadata/entities/relations;
-- compact serialized indexes where useful;
-- Tantivy only if full-text requirements justify it.
+The external platform user cache is overridden by `CONTEXT_ENGINE_CACHE_DIR`.
+The locator hashes native canonical root identity, path codec and parse limit;
+stored metadata also verifies full root identity and option compatibility.
+Overrides must be absolute and outside the analyzed root. The validated inventory
+fingerprint includes native paths, language, role and sizes plus raw eligible
+Rust/Python bytes (generated/vendor and over-limit bodies excluded). Reads use the
+safe bounded loader; Unix opens each component relative to held directory handles
+with no-follow flags. Freshness reserves at most 256 MiB per pass. Unknown
+freshness fails closed. Cold builds validate again and retry at most once on
+mutation, without persisting a known mixed snapshot. Live filesystem operations
+still do not promise atomic snapshots. Git metadata/warnings come from current scans.
 
-Before selecting storage, define actual query patterns, index sizes, invalidation rules, schema versioning, and rebuild behavior.
+`index` forces a rebuild and requires a committed cache. All current intelligence
+consumers share automatic load/build. Automatic write failures warn on stderr and
+return fresh results; scan/stats/tree and committed diff/impact remain separate.
+Store limits include 128 MiB DB, 32 MiB encoded structural payload, 1 MiB per
+record, and existing file/path/symbol/name/detail/relation ceilings.
 
-Incremental indexing later introduces:
-
-```text
-filesystem event
-      ↓
-change coalescing
-      ↓
-affected file analysis
-      ↓
-entity/edge invalidation
-      ↓
-re-index
-      ↓
-new index generation
-```
-
-Concurrency belongs there, not in Phase 0.
+Phase 7 can replace file-scoped rows, re-extract affected analysis and reconstruct
+the same graph. Phase 6 does not implement incremental updates, event loops,
+watchers, concurrency, historical caches, full-text search or service protocols.
 
 ---
 
@@ -618,7 +628,7 @@ symbols is labeled as a direct test match; a related test label requires actual
 qualifying graph evidence and does not imply coverage.
 
 Later work may add supported cross-file relations, snippet or token budgeting,
-embeddings as an optional signal, or persistent indexes. Those are extensions to
+embeddings as an optional signal, or incremental indexes. Those are extensions to
 the existing ranking and packing seam, not prerequisites for its local offline
 operation.
 

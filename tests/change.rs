@@ -1,6 +1,7 @@
-use assert_cmd::cargo::cargo_bin_cmd;
+mod support;
 use serde_json::Value;
 use std::{fs, path::Path, process::Command};
+use support::ctx;
 use tempfile::TempDir;
 fn git(root: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -38,7 +39,7 @@ fn commit(root: &Path) -> String {
     git(root, &["rev-parse", "HEAD"])
 }
 fn run(root: &Path, command: &str, range: &str, flags: &[&str]) -> (Value, Vec<u8>) {
-    let out = cargo_bin_cmd!("ctx")
+    let out = ctx()
         .args([command, range])
         .arg(root)
         .args(["--format", "json"])
@@ -55,7 +56,7 @@ fn run(root: &Path, command: &str, range: &str, flags: &[&str]) -> (Value, Vec<u
 }
 fn human(root: &Path, command: &str, range: &str) -> String {
     String::from_utf8(
-        cargo_bin_cmd!("ctx")
+        ctx()
             .args([command, range])
             .arg(root)
             .assert()
@@ -300,7 +301,7 @@ fn range_cli_validation_zero_delta_and_no_git_errors_have_empty_stdout() {
         "HEAD..HEAD..HEAD",
         "missing..HEAD",
     ] {
-        let a = cargo_bin_cmd!("ctx")
+        let a = ctx()
             .args(["diff", invalid])
             .arg(d.path())
             .args(["--format", "json"])
@@ -314,13 +315,13 @@ fn range_cli_validation_zero_delta_and_no_git_errors_have_empty_stdout() {
         let v = run(d.path(), c, &zero, &[]).0;
         assert_eq!(v["total_file_changes"], 0);
     }
-    cargo_bin_cmd!("ctx").arg("diff").assert().failure();
-    cargo_bin_cmd!("ctx")
+    ctx().arg("diff").assert().failure();
+    ctx()
         .args(["impact", &range, "--depth", "9"])
         .assert()
         .failure();
     let empty = TempDir::new().unwrap();
-    let a = cargo_bin_cmd!("ctx")
+    let a = ctx()
         .args(["diff", "HEAD..HEAD"])
         .arg(empty.path())
         .assert()
@@ -358,7 +359,7 @@ fn raw_blobs_ignore_attributes_filters_and_git_command_overrides() {
     ] {
         git(r, &["config", key, &malicious]);
     }
-    let out = cargo_bin_cmd!("ctx")
+    let out = ctx()
         .args(["diff", &range])
         .arg(r)
         .args(["--format", "json"])

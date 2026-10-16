@@ -1,13 +1,14 @@
-use assert_cmd::cargo::cargo_bin_cmd;
+mod support;
 use predicates::prelude::*;
 use serde_json::Value;
 use std::{fs, path::Path};
+use support::ctx;
 use tempfile::TempDir;
 fn write(root: &Path, path: &str, text: &str) {
     fs::write(root.join(path), text).unwrap();
 }
 fn run(root: &Path, command: &str, name: Option<&str>, flags: &[&str]) -> (Value, Vec<u8>) {
-    let mut cmd = cargo_bin_cmd!("ctx");
+    let mut cmd = ctx();
     cmd.arg(command);
     if let Some(name) = name {
         cmd.arg(name);
@@ -95,7 +96,7 @@ fn full_graph_contract_evidence_accounting_and_determinism() {
             .any(|r| r["metadata"]["binding"] == "Alias")
     );
     assert!(relations.iter().any(|r| r["metadata"]["wildcard"] == true));
-    cargo_bin_cmd!("ctx")
+    ctx()
         .arg("graph")
         .arg(root)
         .assert()
@@ -147,7 +148,7 @@ fn queries_group_roots_preserve_depth_occurrences_and_file_filter() {
             .iter()
             .any(|r| r["kind"] == "imports" && r["target"]["name"] == "local")
     );
-    cargo_bin_cmd!("ctx")
+    ctx()
         .args(["callers", "helper"])
         .arg(root)
         .assert()
@@ -232,7 +233,7 @@ fn exact_candidate_boundary_is_supported() {
 fn help_defaults_and_depth_validation() {
     let dir = TempDir::new().unwrap();
     for command in ["graph", "deps", "callers", "related"] {
-        let help = cargo_bin_cmd!("ctx")
+        let help = ctx()
             .args([command, "--help"])
             .assert()
             .success()
@@ -242,7 +243,7 @@ fn help_defaults_and_depth_validation() {
         let help = String::from_utf8(help).unwrap();
         assert!(help.contains("--format"));
         assert!(help.contains("--max-parse-file-size"));
-        let mut cmd = cargo_bin_cmd!("ctx");
+        let mut cmd = ctx();
         cmd.current_dir(dir.path()).arg(command);
         if command != "graph" {
             cmd.arg("missing");
@@ -252,7 +253,7 @@ fn help_defaults_and_depth_validation() {
         cmd.assert().success();
         if command != "graph" {
             for depth in ["9", "-1", "256"] {
-                cargo_bin_cmd!("ctx")
+                ctx()
                     .args([command, "missing", "--depth", depth])
                     .assert()
                     .failure();
@@ -294,7 +295,7 @@ fn no_execution_body_leakage_or_alias_resolution() {
                 "unresolved"
             );
         }
-        let mut cmd = cargo_bin_cmd!("ctx");
+        let mut cmd = ctx();
         cmd.arg(command);
         if command != "graph" {
             cmd.arg("safe");
@@ -318,7 +319,7 @@ fn graph_symlinks_and_human_control_escaping() {
     let (v, _) = run(dir.path(), "graph", None, &[]);
     assert_eq!(v["data"]["files"].as_array().unwrap().len(), 1);
     for command in ["deps", "callers", "related"] {
-        let out = cargo_bin_cmd!("ctx")
+        let out = ctx()
             .args([command, "safe"])
             .arg(dir.path())
             .assert()
@@ -329,7 +330,7 @@ fn graph_symlinks_and_human_control_escaping() {
         let s = String::from_utf8(out).unwrap();
         assert!(!s.contains('\u{1b}'));
         assert!(s.contains("\\n\\u{1b}"));
-        let out = cargo_bin_cmd!("ctx")
+        let out = ctx()
             .args([command, "safe\n\u{1b}"])
             .arg(dir.path())
             .assert()
@@ -363,7 +364,7 @@ fn production_root_limit_reports_omissions_in_json_and_human_output() {
             &["--file", "a.py", "--depth", "0"],
         );
         assert_eq!(filtered["data"]["roots_truncated"], false);
-        cargo_bin_cmd!("ctx")
+        ctx()
             .args([command, "helper"])
             .arg(dir.path())
             .args(["--depth", "0"])

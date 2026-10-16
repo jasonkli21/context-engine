@@ -2,7 +2,7 @@ use crate::{
     classify::{FileRole, Language},
     language::{AnalysisError, AnalyzerRegistry},
     model::*,
-    scan::{self, ScanError},
+    scan::ScanError,
     source,
 };
 #[derive(Debug, thiserror::Error)]
@@ -16,20 +16,11 @@ pub enum IndexError {
     #[error("repository analysis safety limit exceeded")]
     AnalysisLimit,
 }
-pub fn index_repository(options: &IndexOptions) -> Result<RepositoryIndex, IndexError> {
-    let scan = scan::scan_repository(&ScanOptions {
-        root: options.root.clone(),
-        count_lines: false,
-        max_line_count_file_bytes: 0,
-        probe_git: options.probe_git,
-    })?;
-    Ok(analyze_scan(scan, options.max_parse_file_bytes, false)?.0)
-}
-
+#[cfg(test)]
 pub fn graph_analysis(
     options: &IndexOptions,
 ) -> Result<(RepositoryIndex, Vec<crate::relations::FileRelations>), IndexError> {
-    let scan = scan::scan_repository(&ScanOptions {
+    let scan = crate::scan::scan_repository(&ScanOptions {
         root: options.root.clone(),
         count_lines: false,
         max_line_count_file_bytes: 0,
@@ -60,7 +51,7 @@ const REPOSITORY_LIMITS: RepositoryLimits = RepositoryLimits {
     diagnostics: 10_000,
     relation_bytes: crate::graph::MAX_RELATION_BYTES,
 };
-fn analyze_scan(
+pub(crate) fn analyze_scan(
     scan: RepositoryScan,
     max_parse_file_bytes: u64,
     graph: bool,
@@ -284,6 +275,11 @@ where
         }
         index.files.push(analysis);
     }
+    qualify_paths(&mut index);
+    index.sort();
+    Ok((index, relation_files))
+}
+pub(crate) fn qualify_paths(index: &mut RepositoryIndex) {
     // Preserve Phase 0's explicit qualification of lossy native paths.
     if index.root.to_str().is_none()
         || index
@@ -301,8 +297,6 @@ where
     {
         index.scan_warnings.push(ScanWarning { path: None, message: "some paths contain non-UTF-8 bytes; displayed paths use replacement characters and may not be unique".into() });
     }
-    index.sort();
-    Ok((index, relation_files))
 }
 pub fn is_supported(language: &Language) -> bool {
     matches!(language, Language::Rust | Language::Python)
@@ -322,7 +316,7 @@ mod tests {
             .unwrap();
         }
         let run = |limits, graph| {
-            let scan = scan::scan_repository(&ScanOptions {
+            let scan = crate::scan::scan_repository(&ScanOptions {
                 root: dir.path().into(),
                 count_lines: false,
                 max_line_count_file_bytes: 0,
@@ -410,7 +404,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("gone.rs"), "fn gone() {}").unwrap();
         std::fs::write(dir.path().join("ok.py"), "def ok(): pass").unwrap();
-        let scan = scan::scan_repository(&ScanOptions {
+        let scan = crate::scan::scan_repository(&ScanOptions {
             root: dir.path().into(),
             count_lines: false,
             max_line_count_file_bytes: 0,
@@ -439,7 +433,7 @@ mod mutation_tests {
         for name in ["grown.rs", "link.rs", "ok.rs"] {
             std::fs::write(dir.path().join(name), "fn safe() {}").unwrap();
         }
-        let scan = scan::scan_repository(&ScanOptions {
+        let scan = crate::scan::scan_repository(&ScanOptions {
             root: dir.path().into(),
             count_lines: false,
             max_line_count_file_bytes: 0,

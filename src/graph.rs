@@ -1,9 +1,5 @@
 //! Fresh, bounded repository graph. IDs address canonical vector entries, never names.
-use crate::{
-    index::{self, IndexError},
-    model::*,
-    relations::*,
-};
+use crate::{index::IndexError, model::*, relations::*};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     path::Path,
@@ -54,8 +50,9 @@ struct GraphLimits {
     entities: usize,
     relations: usize,
 }
+#[cfg(test)]
 pub fn build(options: &IndexOptions) -> Result<RepositoryGraph, IndexError> {
-    let (index, files) = index::graph_analysis(options)?;
+    let (index, files) = crate::index::graph_analysis(options)?;
     from_analysis(index, files)
 }
 pub(crate) fn from_analysis(
@@ -740,9 +737,9 @@ mod tests {
             relations: g.relations.len(),
             text_bytes: bytes,
         };
-        let (idx, files) = index::graph_analysis(&opts).unwrap();
+        let (idx, files) = crate::index::graph_analysis(&opts).unwrap();
         assert!(construct(idx, files, limits).is_ok());
-        let (idx, files) = index::graph_analysis(&opts).unwrap();
+        let (idx, files) = crate::index::graph_analysis(&opts).unwrap();
         assert!(matches!(
             construct(
                 idx,
@@ -1005,7 +1002,7 @@ mod tests {
             entities: g.entities.len(),
             relations: g.relations.len(),
         };
-        let analyze = || index::graph_analysis(&opts).unwrap();
+        let analyze = || crate::index::graph_analysis(&opts).unwrap();
         let (idx, files) = analyze();
         assert!(construct(idx, files, exact).is_ok());
         for limits in [

@@ -162,30 +162,45 @@ pub struct IndexOptions {
     pub probe_git: bool,
 }
 /// UTF-8 byte offsets, zero-based rows and byte columns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord,
+)]
 pub struct SourcePoint {
     pub byte: usize,
     pub row: usize,
     pub column: usize,
 }
 /// Half-open byte interval [start, end).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord,
+)]
 pub struct SourceRange {
     pub start: SourcePoint,
     pub end: SourcePoint,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolKind {
+    #[serde(rename = "module")]
     Module,
+    #[serde(rename = "class")]
     Class,
+    #[serde(rename = "struct")]
     Struct,
+    #[serde(rename = "enum")]
     Enum,
+    #[serde(rename = "union")]
     Union,
+    #[serde(rename = "trait")]
     Trait,
+    #[serde(rename = "function")]
     Function,
+    #[serde(rename = "method")]
     Method,
+    #[serde(rename = "type_alias")]
     TypeAlias,
+    #[serde(rename = "constant")]
     Constant,
+    #[serde(rename = "static")]
     Static,
 }
 impl SymbolKind {
@@ -205,8 +220,9 @@ impl SymbolKind {
         }
     }
 }
-#[derive(Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct Symbol {
+    #[serde(skip)]
     pub relative_path: PathBuf,
     pub language: Language,
     pub kind: SymbolKind,
@@ -215,15 +231,23 @@ pub struct Symbol {
     pub range: SourceRange,
     pub name_range: SourceRange,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnalysisStatus {
+    #[serde(rename = "analyzed")]
     Analyzed,
+    #[serde(rename = "unsupported_language")]
     UnsupportedLanguage,
+    #[serde(rename = "skipped_role")]
     SkippedRole,
+    #[serde(rename = "too_large")]
     TooLarge,
+    #[serde(rename = "invalid_utf8")]
     InvalidUtf8,
+    #[serde(rename = "read_failed")]
     ReadFailed,
+    #[serde(rename = "parse_failed")]
     ParseFailed,
+    #[serde(rename = "analysis_limit_exceeded")]
     AnalysisLimitExceeded,
 }
 impl AnalysisStatus {
@@ -240,8 +264,9 @@ impl AnalysisStatus {
         }
     }
 }
-#[derive(Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct FileAnalysis {
+    #[serde(skip)]
     pub relative_path: PathBuf,
     pub language: Language,
     pub role: FileRole,
@@ -249,13 +274,19 @@ pub struct FileAnalysis {
     pub symbol_count: usize,
     pub syntax_error_count: usize,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticKind {
+    #[serde(rename = "syntax_error")]
     SyntaxError,
+    #[serde(rename = "missing_syntax")]
     MissingSyntax,
+    #[serde(rename = "read_error")]
     ReadError,
+    #[serde(rename = "invalid_utf8")]
     InvalidUtf8,
+    #[serde(rename = "parse_failure")]
     ParseFailure,
+    #[serde(rename = "analysis_limit_exceeded")]
     AnalysisLimitExceeded,
 }
 impl DiagnosticKind {
@@ -270,8 +301,9 @@ impl DiagnosticKind {
         }
     }
 }
-#[derive(Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct AnalysisDiagnostic {
+    #[serde(skip)]
     pub relative_path: PathBuf,
     pub kind: DiagnosticKind,
     pub message: String,

@@ -1,7 +1,8 @@
-use assert_cmd::cargo::cargo_bin_cmd;
+mod support;
 use predicates::prelude::*;
 use serde_json::Value;
 use std::{fs, path::Path, process::Command};
+use support::ctx;
 use tempfile::TempDir;
 
 fn write(root: &Path, path: &str, data: &[u8]) {
@@ -10,7 +11,7 @@ fn write(root: &Path, path: &str, data: &[u8]) {
     fs::write(target, data).unwrap();
 }
 fn json(root: &Path, command: &str, flags: &[&str]) -> (Value, Vec<u8>) {
-    let output = cargo_bin_cmd!("ctx")
+    let output = ctx()
         .arg(command)
         .arg(root)
         .args(["--format", "json"])
@@ -49,16 +50,12 @@ fn fixture() -> TempDir {
 }
 #[test]
 fn help_version_and_default_commands() {
-    cargo_bin_cmd!("ctx")
-        .arg("--help")
-        .assert()
-        .success()
-        .stdout(
-            predicate::str::contains("scan")
-                .and(predicate::str::contains("stats"))
-                .and(predicate::str::contains("tree")),
-        );
-    cargo_bin_cmd!("ctx")
+    ctx().arg("--help").assert().success().stdout(
+        predicate::str::contains("scan")
+            .and(predicate::str::contains("stats"))
+            .and(predicate::str::contains("tree")),
+    );
+    ctx()
         .arg("--version")
         .assert()
         .success()
@@ -66,7 +63,7 @@ fn help_version_and_default_commands() {
     let temp = TempDir::new().unwrap();
     write(temp.path(), "a.rs", b"x\n");
     for command in ["scan", "stats", "tree"] {
-        let help = cargo_bin_cmd!("ctx")
+        let help = ctx()
             .args([command, "--help"])
             .assert()
             .success()
@@ -79,7 +76,7 @@ fn help_version_and_default_commands() {
             assert!(!help.contains("--no-lines"));
             assert!(!help.contains("--max-line-file-size"));
         }
-        let output = cargo_bin_cmd!("ctx")
+        let output = ctx()
             .current_dir(temp.path())
             .args([command, "--format", "json"])
             .assert()
@@ -95,11 +92,8 @@ fn help_version_and_default_commands() {
             temp.path().canonicalize().unwrap().to_str().unwrap()
         );
     }
-    cargo_bin_cmd!("ctx")
-        .args(["scan", "--format", "xml"])
-        .assert()
-        .failure();
-    cargo_bin_cmd!("ctx")
+    ctx().args(["scan", "--format", "xml"]).assert().failure();
+    ctx()
         .args(["scan", "--max-line-file-size", "bad"])
         .assert()
         .failure();
@@ -108,7 +102,7 @@ fn help_version_and_default_commands() {
 fn invalid_roots() {
     let temp = TempDir::new().unwrap();
     for command in ["scan", "stats", "tree"] {
-        cargo_bin_cmd!("ctx")
+        ctx()
             .arg(command)
             .arg(temp.path().join("missing"))
             .assert()
@@ -116,7 +110,7 @@ fn invalid_roots() {
             .stderr(predicate::str::contains("scan root"));
     }
     write(temp.path(), "file.rs", b"x");
-    cargo_bin_cmd!("ctx")
+    ctx()
         .arg("scan")
         .arg(temp.path().join("file.rs"))
         .assert()
@@ -175,7 +169,7 @@ fn mixed_inventory_counts_ignores_and_stability() {
             .any(|e| e["path"] == "empty" && e["kind"] == "directory")
     );
     assert_eq!(json(temp.path(), "tree", &[]).1, tree_bytes);
-    let output = cargo_bin_cmd!("ctx")
+    let output = ctx()
         .arg("tree")
         .arg(temp.path())
         .assert()
@@ -183,7 +177,7 @@ fn mixed_inventory_counts_ignores_and_stability() {
         .get_output()
         .stdout
         .clone();
-    let second = cargo_bin_cmd!("ctx")
+    let second = ctx()
         .arg("tree")
         .arg(temp.path())
         .assert()
@@ -195,7 +189,7 @@ fn mixed_inventory_counts_ignores_and_stability() {
     let text = String::from_utf8(output).unwrap();
     assert!(text.contains("empty/\n"));
     assert!(!text.contains("ignored.log"));
-    cargo_bin_cmd!("ctx")
+    ctx()
         .arg("scan")
         .arg(temp.path())
         .assert()
@@ -208,7 +202,7 @@ fn mixed_inventory_counts_ignores_and_stability() {
                 .and(predicate::str::contains("Largest files"))
                 .and(predicate::str::contains("Git")),
         );
-    cargo_bin_cmd!("ctx")
+    ctx()
         .arg("stats")
         .arg(temp.path())
         .assert()
@@ -251,7 +245,7 @@ fn line_limits_and_recoverable_invalid_text() {
             .all(|f| f["line_count"].is_null())
     );
     assert_eq!(v["data"]["totals"]["files_with_line_counts"], 0);
-    cargo_bin_cmd!("ctx")
+    ctx()
         .arg("scan")
         .arg(temp.path())
         .assert()
@@ -323,7 +317,7 @@ fn git_metadata_unborn_clean_dirty_detached_and_subdirectory() {
 fn missing_git_is_optional() {
     let temp = TempDir::new().unwrap();
     write(temp.path(), "a.py", b"a\n");
-    let output = cargo_bin_cmd!("ctx")
+    let output = ctx()
         .env("PATH", temp.path())
         .arg("scan")
         .arg(temp.path())
@@ -369,7 +363,7 @@ fn symlinks_and_failed_git() {
         b"#!/bin/sh\necho simulated-git-failure >&2\nexit 2\n",
     );
     fs::set_permissions(bin.path().join("git"), fs::Permissions::from_mode(0o755)).unwrap();
-    let output = cargo_bin_cmd!("ctx")
+    let output = ctx()
         .env("PATH", bin.path())
         .arg("scan")
         .arg(temp.path())
@@ -433,7 +427,7 @@ fn symlinked_ignore_controls_fail_closed_at_root_and_in_parents() {
             b"must not be hidden by outside data\n",
         );
 
-        let result = cargo_bin_cmd!("ctx")
+        let result = ctx()
             .arg("scan")
             .arg(temp.path())
             .args(["--format", "json"])
@@ -461,7 +455,7 @@ fn symlinked_ignore_controls_fail_closed_at_root_and_in_parents() {
         b"must not be hidden by outside data\n",
     );
 
-    let result = cargo_bin_cmd!("ctx")
+    let result = ctx()
         .arg("scan")
         .arg(&scan_root)
         .args(["--format", "json"])
@@ -690,7 +684,7 @@ fn git_filter_safety_check_failure_skips_status() {
     );
     fs::set_permissions(bin.path().join("git"), fs::Permissions::from_mode(0o755)).unwrap();
     let marker = temp.path().join("status-was-run");
-    let output = cargo_bin_cmd!("ctx")
+    let output = ctx()
         .env("PATH", bin.path())
         .env("CTX_REAL_GIT", real_git)
         .env("CTX_GIT_MARKER", &marker)
@@ -728,7 +722,7 @@ fn tree_does_not_read_file_contents_or_invoke_git() {
     );
     fs::set_permissions(bin.path().join("git"), fs::Permissions::from_mode(0o755)).unwrap();
     let marker = temp.path().join("tree-ran-git");
-    let output = cargo_bin_cmd!("ctx")
+    let output = ctx()
         .env("PATH", bin.path())
         .env("CTX_GIT_MARKER", &marker)
         .arg("tree")
@@ -753,7 +747,7 @@ fn human_tree_escapes_control_characters_in_repository_filenames() {
     let temp = TempDir::new().unwrap();
     let name = OsString::from_vec(b"bad\n\x1b.rs".to_vec());
     fs::write(temp.path().join(name), b"x\n").unwrap();
-    let output = cargo_bin_cmd!("ctx")
+    let output = ctx()
         .arg("tree")
         .arg(temp.path())
         .assert()
@@ -776,7 +770,7 @@ fn aggregate_scan_failure_emits_no_partial_json_for_any_pipeline() {
         "scan", "stats", "tree", "index", "symbols", "symbol", "graph", "deps", "callers",
         "related",
     ] {
-        let mut cmd = cargo_bin_cmd!("ctx");
+        let mut cmd = ctx();
         cmd.arg(command);
         if ["symbol", "deps", "callers", "related"].contains(&command) {
             cmd.arg("helper");

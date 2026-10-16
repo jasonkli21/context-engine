@@ -1,6 +1,7 @@
-use assert_cmd::cargo::cargo_bin_cmd;
+mod support;
 use serde_json::Value;
 use std::{fs, path::Path};
+use support::ctx;
 use tempfile::TempDir;
 fn fixture() -> TempDir {
     let d = TempDir::new().unwrap();
@@ -14,7 +15,7 @@ fn fixture() -> TempDir {
     d
 }
 fn run(root: &Path, args: &[&str]) -> (Value, Vec<u8>) {
-    let bytes = cargo_bin_cmd!("ctx")
+    let bytes = ctx()
         .args(args)
         .arg(root)
         .args(["--format", "json"])
@@ -29,7 +30,7 @@ fn run(root: &Path, args: &[&str]) -> (Value, Vec<u8>) {
 }
 fn run_human(root: &Path, args: &[&str]) -> String {
     String::from_utf8(
-        cargo_bin_cmd!("ctx")
+        ctx()
             .args(args)
             .arg(root)
             .args(["--format", "human"])
@@ -353,13 +354,9 @@ fn validation_and_control_escaping() {
         vec!["neighborhood", "--file", "/a"],
         vec!["neighborhood", "--symbol", "x", "--depth", "9"],
     ] {
-        cargo_bin_cmd!("ctx")
-            .args(args)
-            .assert()
-            .failure()
-            .stdout("");
+        ctx().args(args).assert().failure().stdout("");
     }
-    cargo_bin_cmd!("ctx")
+    ctx()
         .args(["search", &"a".repeat(4097)])
         .assert()
         .failure()
@@ -369,7 +366,7 @@ fn validation_and_control_escaping() {
         vec!["search", "x\u{1b}"],
         vec!["neighborhood", "--symbol", "x\u{1b}"],
     ] {
-        let bytes = cargo_bin_cmd!("ctx")
+        let bytes = ctx()
             .args(args)
             .arg(d.path())
             .assert()

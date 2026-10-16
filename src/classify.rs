@@ -1,18 +1,30 @@
 use std::path::Path;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Language {
+    #[serde(rename = "rust")]
     Rust,
+    #[serde(rename = "python")]
     Python,
+    #[serde(rename = "type_script")]
     TypeScript,
+    #[serde(rename = "java_script")]
     JavaScript,
+    #[serde(rename = "markdown")]
     Markdown,
+    #[serde(rename = "json")]
     Json,
+    #[serde(rename = "yaml")]
     Yaml,
+    #[serde(rename = "toml")]
     Toml,
+    #[serde(rename = "shell")]
     Shell,
+    #[serde(rename = "sql")]
     Sql,
+    #[serde(rename = "other")]
     Other(String),
+    #[serde(rename = "unknown")]
     Unknown,
 }
 
@@ -38,16 +50,27 @@ impl Language {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord,
+)]
 pub enum FileRole {
+    #[serde(rename = "source")]
     Source,
+    #[serde(rename = "test")]
     Test,
+    #[serde(rename = "documentation")]
     Documentation,
+    #[serde(rename = "configuration")]
     Configuration,
+    #[serde(rename = "schema")]
     Schema,
+    #[serde(rename = "migration")]
     Migration,
+    #[serde(rename = "generated")]
     Generated,
+    #[serde(rename = "vendor")]
     Vendor,
+    #[serde(rename = "unknown")]
     Unknown,
 }
 impl FileRole {

@@ -29,7 +29,7 @@ pub enum Command {
     Neighborhood(NeighborhoodArgs),
     /// Rank structural activity and central symbols in the current graph.
     Hotspots(HotspotArgs),
-    /// Build a fresh in-memory repository relationship graph (syntax evidence).
+    /// Inspect the current repository relationship graph (validated analysis cache).
     Graph(AnalysisArgs),
     /// Traverse best-effort outgoing call-site references and unresolved facts.
     Deps(GraphQueryArgs),
@@ -37,7 +37,7 @@ pub enum Command {
     Callers(GraphQueryArgs),
     /// Traverse lexical containment and reference neighbors in both directions.
     Related(GraphQueryArgs),
-    /// Build a fresh in-memory syntax/symbol index (no persistence).
+    /// Force fresh analysis and commit the external persistent index.
     Index(AnalysisArgs),
     /// List Rust and Python source symbols.
     Symbols(AnalysisArgs),
