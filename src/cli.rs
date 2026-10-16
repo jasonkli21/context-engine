@@ -39,6 +39,8 @@ pub enum Command {
     Related(GraphQueryArgs),
     /// Force fresh analysis and commit the external persistent index.
     Index(AnalysisArgs),
+    /// Keep the external index current in the foreground (stderr status only).
+    Watch(WatchArgs),
     /// List Rust and Python source symbols.
     Symbols(AnalysisArgs),
     /// Look up an exact symbol name.
@@ -189,4 +191,13 @@ pub struct ContextArgs {
     pub change: Option<String>,
     #[command(flatten)]
     pub analysis: AnalysisArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct WatchArgs {
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+    /// Maximum bytes per source file eligible for parsing.
+    #[arg(long, default_value_t = crate::model::DEFAULT_MAX_PARSE_BYTES)]
+    pub max_parse_file_size: u64,
 }

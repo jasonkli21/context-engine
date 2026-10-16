@@ -15,6 +15,7 @@ mod relations;
 mod scan;
 mod source;
 mod store;
+mod watch;
 
 use crate::{
     cli::{Cli, Command, Format, PathArgs, TreeArgs},
@@ -29,6 +30,7 @@ use std::{
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let rendered = match cli.command {
+        Command::Watch(args) => return watch_command(args),
         Command::Context(args) => context_command(args)?,
         Command::Diff(args) => change_command("diff", args, None)?,
         Command::Impact(args) => change_command("impact", args.change, Some(args.depth))?,
@@ -70,12 +72,32 @@ fn scan_command(command: Command) -> Result<String, Box<dyn std::error::Error>> 
     })
 }
 
+fn current_analysis(
+    options: &model::IndexOptions,
+    force: bool,
+) -> Result<persistence::AnalysisArtifact, persistence::CacheError> {
+    let result = persistence::reconcile(options, force)?;
+    for warning in result.warnings {
+        eprintln!("ctx: warning: {}", output::escape_controls(&warning));
+    }
+    Ok(result.artifact)
+}
+fn current_graph(
+    options: &model::IndexOptions,
+) -> Result<graph::RepositoryGraph, persistence::CacheError> {
+    let artifact = current_analysis(options, false)?;
+    Ok(graph::from_analysis(
+        artifact.index,
+        artifact.relation_files,
+    )?)
+}
+
 fn analyze(
     command: &str,
     args: cli::AnalysisArgs,
     query: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let index = persistence::load_or_build(
+    let index = current_analysis(
         &model::IndexOptions {
             root: args.path,
             max_parse_file_bytes: args.max_parse_file_size,
@@ -105,7 +127,7 @@ fn graph_command(
     args: cli::AnalysisArgs,
     query: Option<(&str, Option<&std::path::Path>, u8)>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let graph = persistence::graph(&model::IndexOptions {
+    let graph = current_graph(&model::IndexOptions {
         root: args.path,
         max_parse_file_bytes: args.max_parse_file_size,
         probe_git: true,
@@ -137,7 +159,7 @@ fn options(args: &cli::AnalysisArgs) -> model::IndexOptions {
 }
 fn search_command(args: cli::SearchArgs) -> Result<String, Box<dyn std::error::Error>> {
     query::validate_query(&args.query)?;
-    let index = persistence::load_or_build(&options(&args.analysis), false)?.index;
+    let index = current_analysis(&options(&args.analysis), false)?.index;
     let result = query::search(&index, &args.query, args.kind.into(), args.limit as usize)?;
     Ok(match args.analysis.format {
         Format::Human => {
@@ -163,7 +185,7 @@ fn neighborhood_command(args: cli::NeighborhoodArgs) -> Result<String, Box<dyn s
         .as_deref()
         .map(str::to_owned)
         .unwrap_or_else(|| args.file.as_ref().unwrap().to_string_lossy().into_owned());
-    let g = persistence::graph(&options(&args.analysis))?;
+    let g = current_graph(&options(&args.analysis))?;
     let result = g.query(
         graph::QueryKind::Neighborhood,
         &selector,
@@ -178,7 +200,7 @@ fn neighborhood_command(args: cli::NeighborhoodArgs) -> Result<String, Box<dyn s
     })
 }
 fn hotspots_command(args: cli::HotspotArgs) -> Result<String, Box<dyn std::error::Error>> {
-    let g = persistence::graph(&options(&args.analysis))?;
+    let g = current_graph(&options(&args.analysis))?;
     let result = query::hotspots(&g, args.limit as usize)?;
     Ok(match args.analysis.format {
         Format::Human => output::query::hotspots_human(&g, &result),
@@ -244,7 +266,7 @@ fn context_command(args: cli::ContextArgs) -> Result<String, Box<dyn std::error:
     context::validate_budget(args.budget)?;
     let mut opts = options(&args.analysis);
     opts.probe_git = true;
-    let g = persistence::graph(&opts)?;
+    let g = current_graph(&opts)?;
     let changes = args
         .change
         .as_deref()
@@ -259,4 +281,47 @@ fn context_command(args: cli::ContextArgs) -> Result<String, Box<dyn std::error:
         Format::Human => output::context::human(&g, &task, &bundle, changes.as_ref())?,
         Format::Json => output::context::json(&g, &task, &bundle, changes.as_ref())?,
     })
+}
+
+fn watch_command(args: cli::WatchArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let root = args.path.canonicalize()?;
+    let options = model::IndexOptions {
+        root: root.clone(),
+        max_parse_file_bytes: args.max_parse_file_size,
+        probe_git: false,
+    };
+    // Register before the initial reconciliation so edits during startup remain
+    // queued. One foreground owner performs every scan/parse/store operation.
+    let watcher = watch::Watch::new(&root)?;
+    eprintln!(
+        "ctx: watching {}",
+        output::escape_controls(&root.to_string_lossy())
+    );
+    let update = || match persistence::reconcile(&options, false) {
+        Ok(result) => {
+            for warning in result.warnings {
+                eprintln!("ctx: warning: {}", output::escape_controls(&warning));
+            }
+            if result.committed {
+                eprintln!("ctx: index current");
+            } else {
+                eprintln!("ctx: warning: cache unchanged; update was not committed");
+            }
+        }
+        Err(error) => eprintln!(
+            "ctx: warning: {}",
+            output::escape_controls(&error.to_string())
+        ),
+    };
+    update();
+    loop {
+        if let Some(activity) = watcher.next() {
+            if activity.watcher_error {
+                eprintln!("ctx: warning: watcher error; rescanning repository");
+            } else if activity.resync {
+                eprintln!("ctx: warning: event queue overflow; rescanning repository");
+            }
+            update();
+        }
+    }
 }

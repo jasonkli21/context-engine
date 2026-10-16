@@ -462,7 +462,7 @@ Safe early performance practices:
 
 Performance claims must be benchmarked rather than inferred from the use of Rust.
 
-Concurrency is deliberately introduced later as a learning milestone for incremental indexing.
+Phase 7 introduces narrow watcher callback/channel concurrency; parsing remains sequential.
 
 ---
 
@@ -528,11 +528,11 @@ Persistence is a later concern and should be selected from real query patterns r
 
 ---
 
-## 20. Persistent analysis and future incremental architecture
+## 20. Persistent and incremental analysis
 
-Phase 6 stores the established `RepositoryIndex` structural records plus per-file
+Phases 6–7 store the established `RepositoryIndex` structural records plus per-file
 `FileRelations` extraction. `persistence.rs` owns freshness and load/build
-composition; `store.rs` owns SQLite schema v2 and record codecs. Graph commands
+composition; `store.rs` owns SQLite schema v3 and record codecs. Graph commands
 always reconstruct through `graph::from_analysis`. No graph IDs, adjacency, query
 results, ranking results or source bodies are persisted. Rendering has no storage
 or discovery dependency.
@@ -541,14 +541,15 @@ SQLite uses bundled `rusqlite`, foreign keys, a two-second busy timeout, bounded
 record reads and transactional replacement. A complete sibling temporary database
 is committed and synced before atomic replacement; failed writes preserve the
 prior committed artifact. Incompatible/corrupt databases rebuild without migration.
-Schema v2, `INDEX_COMPAT_VERSION=1` and `freshness-v1` are separate contracts.
+Schema v3, `INDEX_COMPAT_VERSION=1` and `freshness-v2` are separate contracts.
+Schema v2 is an incompatible derivative cache; it rebuilds without migration.
 Stable named JSON records occupy normalized file/symbol/diagnostic/extraction/
 candidate rows; paths are BLOBs with `unix_bytes_v1` or `windows_wide_le_v1`.
 File storage keys derive from the native relative path and child ordinals restart
 within each file, so unrelated inventory positions or child counts do not renumber
 other rows. These keys are internal and never graph identity. A versioned BLAKE3
 artifact digest covers the ordered storage keys, native paths, associations and exact
-encoded payload bytes. It detects cache-byte corruption separately from source
+encoded payload bytes, including per-file size/input stamps. It detects cache-byte corruption separately from source
 freshness; it is not an authenticity mechanism against a process that can rewrite
 both the database and digest.
 
@@ -562,21 +563,57 @@ safe bounded loader; Unix opens each component relative to held directory handle
 with no-follow flags. Freshness reserves at most 256 MiB per pass. Unknown
 freshness fails closed for cache reuse. Automatic queries then return bounded
 best-effort analysis, preserving per-file `ReadFailed` status, and do not persist
-that result; explicit `index` fails. Cold builds validate again and retry at most once on
+that result; explicit `index` fails. Full/incremental builds validate the entire input set again and retry at most once on
 mutation, without persisting a known mixed snapshot. Live filesystem operations
 still do not promise atomic snapshots. Git metadata/warnings come from current scans.
 
 `index` forces a rebuild and requires a committed cache. All current intelligence
-consumers share automatic load/build. Automatic write failures warn on stderr and
+consumers share automatic file-local reconciliation. Automatic write failures warn on stderr and
 return fresh results; scan/stats/tree and committed diff/impact remain separate.
 Store limits include 128 MiB DB, 32 MiB encoded structural payload, 1 MiB per
 record, and existing file/path/symbol/name/detail/relation ceilings.
 
-Schema v2 gives Phase 7 a file-local row replacement seam: path-derived file keys
-and per-file child ordinals let it replace one file's analysis and dependent
-candidates without renumbering unrelated records, then reconstruct the same graph.
-Phase 6 does not implement incremental updates, event loops,
-watchers, concurrency, historical caches, full-text search or service protocols.
+`index::analyze_file` produces a plain file-owned unit using one batch analyzer
+registry. Full builds and changed-file batches share it. `AnalysisTotals` enforces
+the same aggregate limits while accumulating a full build and after merging retained
+and recomputed evidence. Graphs always reconstruct through `graph::from_analysis`.
+
+`freshness-v2` hashes length-delimited version/codec, compatibility, parse limit,
+native relative path, serialized language, role, size and eligible raw source bytes
+for each file. A canonical path-sorted map of stamps produces the repository
+generation (also versioned by codec/compatibility/options). All eligible bytes are
+still read on one-shot requests; mtime is not proof. Unsupported/skipped/over-limit
+bodies are excluded because they cannot affect parser evidence.
+
+`store::load_snapshot` validates schema/options/root/native paths, bounds, integrity,
+foreign keys, ownership, ordinals, ranges and aggregate counts independently of the
+current inventory. Its persisted sizes validate stale source ranges. The stored
+generation is checked against the canonical per-file stamps. Only a trusted snapshot
+can supply retained units. Path/stamp equality retains evidence; additions/changes
+reanalyze, deletions disappear and renames are delete-plus-add.
+
+`store::patch` takes a SQLite IMMEDIATE transaction, reloads/validates the base and
+compares its generation with the expected token. It deletes children before their
+owners for removed/replaced paths, inserts changed groups with file-local ordinals,
+checks whole-store preflight, recomputes integrity/generation metadata, validates the
+result and commits. Any error rolls back. A typed conflict triggers one bounded
+reload/reconcile; it never blindly applies a patch from a stale base. Explicit full
+rebuild/repair still uses the synced sibling replacement path. This is optimistic
+coordination of incremental writers, not a filesystem snapshot or global lock service.
+
+`watch.rs` owns a `notify::RecommendedWatcher`, a one-slot standard synchronous
+channel and narrow atomic dirty/resync/error flags. Callbacks discard paths and
+only enqueue signals; access-only events are ignored unless resync is requested.
+The foreground CLI owner coalesces bursts over a bounded 100 ms window and invokes
+the same reconciler. Overflow, backend rescan hints and errors trigger deterministic
+full-inventory reconciliation; activity during work remains pending. Watch registration
+precedes initial reconciliation. Operational output belongs to the CLI on stderr;
+there is no streaming machine contract. Freshness/write failures preserve the prior
+committed generation. Normal process termination is sufficient.
+
+Historical caches, full-text search, parallel parsers, async and service protocols
+remain deferred. Phase 8 history, Phase 9 service/adapters and Phase 11 evidence
+exports remain separate milestones.
 
 ---
 
@@ -638,7 +675,7 @@ symbols is labeled as a direct test match; a related test label requires actual
 qualifying graph evidence and does not imply coverage.
 
 Later work may add supported cross-file relations, snippet or token budgeting,
-embeddings as an optional signal, or incremental indexes. Those are extensions to
+embeddings as an optional signal. Those are extensions to
 the existing ranking and packing seam, not prerequisites for its local offline
 operation.
 
@@ -689,12 +726,12 @@ Add dependencies only when current code uses them.
 
 The scaffold initially includes only dependencies needed by the code already present; Phase 0 implementation adds the rest when used.
 
-### Explicitly deferred
+### Later-phase dependencies
 
-- `tree-sitter` — Phase 1;
+- `tree-sitter` — delivered in Phase 1;
 - graph library/database — Phase 2 only if useful;
-- `rusqlite` — persistence phase;
-- `notify` — incremental phase;
+- `rusqlite` — delivered in Phase 6;
+- `notify` — delivered in Phase 7;
 - `tokio` — daemon/service phase;
 - `rayon` — only after measurement;
 - embeddings/model SDKs — optional much later.

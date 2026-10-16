@@ -12,10 +12,11 @@ The project is intentionally **descriptive rather than normative**. It aims to m
 
 ## Status
 
-**Pre-alpha / Phase 6 implemented; review findings addressed, fresh independent re-review pending.**
+**Pre-alpha / Phase 7 implemented; fresh independent review pending.**
 The synchronous CLI scans repositories, indexes Rust/Python symbols, and builds a
 canonical in-memory graph of lexical containment, imports and call-site references,
-reusing a validated external analysis cache after a fresh inventory/freshness check.
+incrementally reconciling a validated external analysis cache after fresh inventory/content checks.
+`ctx watch` keeps that cache current in a foreground process.
 Phase 6 review findings have been addressed in a single follow-up commit; independent
 re-review and earlier pending phase dispositions remain pending. Phase 0 was accepted
 on 2026-10-14. Async, MCP, embeddings and model calls remain future work.
@@ -31,6 +32,7 @@ cargo build --release
 ./target/release/ctx scan .
 ./target/release/ctx stats /path/to/project
 ./target/release/ctx tree .
+./target/release/ctx watch .
 ./target/release/ctx scan . --format json
 ./target/release/ctx scan . --no-lines
 ./target/release/ctx scan . --max-line-file-size 2097152
@@ -315,12 +317,13 @@ analysis or rebuild it. These commands accept
 - Human symbol locations use one-based lines and byte columns at the symbol name.
   All repository-controlled human text has control characters escaped.
 
-### Persistent analysis (Phase 6)
+### Persistent and incremental analysis (Phases 6–7)
 
 Current-state `index`, `symbols`, `symbol`, `graph`, `deps`, `callers`, `related`,
 `search`, `neighborhood`, `hotspots` and `context` share a SQLite analysis cache.
 `index` always rebuilds and only succeeds after the cache is committed. Other
-commands rebuild missing, stale, incompatible or corrupt caches; a write failure
+commands reanalyze only changed/new files in a trusted stale cache, and fully rebuild
+missing, incompatible or corrupt caches; a write failure
 may return freshly computed results with a warning on stderr. JSON stdout stays clean.
 `scan`, `stats`, `tree`, `diff` and `impact` retain their separate live/revision paths.
 `context --change` retains its clean/current-HEAD compatibility checks.
@@ -329,9 +332,10 @@ The default location is `<platform-cache>/context-engine/indexes/<key>.sqlite3`.
 Set `CONTEXT_ENGINE_CACHE_DIR=/absolute/external/path` to override the cache base
 (the database remains under `indexes/`). Paths beneath the analyzed root are
 rejected before creation. The key uses lossless canonical root bytes and the parse
-file limit. Schema v2, analysis compatibility v1 and `freshness-v1` are explicit.
+file limit. Schema v3, analysis compatibility v1 and `freshness-v2` are explicit.
+Schema-v2 stores rebuild automatically.
 Path-derived storage keys and per-file ordinals keep unrelated file rows stable.
-A versioned BLAKE3 digest detects changes to the exact persisted structural rows.
+A versioned BLAKE3 digest covers structural rows and per-file input stamps.
 Only structural analysis is stored: file records, symbols, diagnostics and relation
 candidates. No source bodies, graph IDs, adjacency or query/ranking results are saved.
 
@@ -341,11 +345,23 @@ are excluded, but inventory paths, classifications and sizes are fingerprinted.
 Freshness reads reserve at most 256 MiB including growth probes. When freshness
 cannot be established, automatic commands bypass the cache and return best-effort
 analysis with per-file failures reported; explicit `index` fails. Incomplete results
-are not persisted. Rebuilds compare pre/post inventories and hashes and retry once
-on change; a second change fails without replacement. Store reads enforce
+are not persisted. Full/incremental updates compare complete pre/post inventories and
+hashes, retrying once on mutation or a store-generation conflict. A second mutation
+or conflict fails without committing the candidate. File-local SQLite transactions
+replace changed ownership groups, remove deleted groups and preserve unrelated rows. Store reads enforce
 128 MiB database, 32 MiB encoded payload and existing structural aggregate limits.
 Git metadata and scan warnings stay live. Filesystem results remain non-atomic.
-Phase 7 file-level incremental indexing and watchers remain future work.
+
+`ctx watch [PATH] --max-parse-file-size BYTES` reconciles initially and after filesystem
+activity, until normal process termination. Status/warnings go only to stderr;
+there is no JSON stream. A bounded one-slot queue coalesces activity; overflow and
+watcher errors trigger a full scan/stamp reconciliation. Event paths never become
+source inputs. One foreground owner scans, parses and writes SQLite, while `notify`
+callbacks only signal activity. Registering the watcher precedes the initial update
+to retain edits during startup. Unverified or failed updates leave the last committed
+cache intact and report a warning. Normal termination needs no shutdown protocol.
+The watcher adds no daemon, query server or parallel parsing.
+
 
 ### Repository relationship graph
 
@@ -483,7 +499,7 @@ not an identity for exact dirty working-tree content.
 
 ## Future direction
 
-Later phases may add incremental updates, history/co-change signals,
+Later phases may add history/co-change signals,
 service adapters and cross-repository context. These capabilities are not implemented.
 
 ## Why Rust?

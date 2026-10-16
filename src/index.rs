@@ -92,21 +92,16 @@ fn analyze_with_loader<F>(
 where
     F: FnMut(&std::path::Path, &FileRecord, u64) -> Result<String, AnalysisStatus>,
 {
-    let (mut name_bytes, mut detail_bytes) = (0usize, 0usize);
-    let mut relation_bytes = scan
-        .files
-        .iter()
-        .map(|f| f.relative_path.as_os_str().len())
-        .sum::<usize>();
-    if graph && relation_bytes > limits.relation_bytes {
-        return Err(IndexError::GraphLimit);
-    }
-    if graph && scan.files.len().saturating_add(1) > crate::graph::MAX_ENTITIES {
-        return Err(IndexError::GraphLimit);
-    }
-    let mut relation_files = vec![];
-    let mut relation_count = scan.files.len();
-    let file_count = scan.files.len();
+    let mut totals = AnalysisTotals {
+        files: scan.files.len(),
+        relation_bytes: scan
+            .files
+            .iter()
+            .map(|f| f.relative_path.as_os_str().len())
+            .sum(),
+        ..AnalysisTotals::default()
+    };
+    totals.check(graph, limits)?;
     let mut registry = AnalyzerRegistry::new()?;
     let mut index = RepositoryIndex {
         root: scan.root,
@@ -116,168 +111,208 @@ where
         symbols: vec![],
         diagnostics: vec![],
     };
+    let mut relation_files = vec![];
     for file in scan.files {
-        let mut analysis = FileAnalysis {
-            relative_path: file.relative_path.clone(),
-            language: file.language.clone(),
-            role: file.role,
-            status: AnalysisStatus::UnsupportedLanguage,
-            symbol_count: 0,
-            syntax_error_count: 0,
-        };
-        if let Some(analyzer) = registry.analyzer_for(&file.language) {
-            if matches!(file.role, FileRole::Generated | FileRole::Vendor) {
-                analysis.status = AnalysisStatus::SkippedRole;
-            } else if file.size_bytes > max_parse_file_bytes {
-                analysis.status = AnalysisStatus::TooLarge;
-            } else {
-                match loader(&index.root, &file, max_parse_file_bytes) {
-                    Ok(text) => match if graph {
-                        analyzer.analyze_graph(&file.relative_path, &text)
-                    } else {
-                        analyzer.analyze(&file.relative_path, &text)
-                    } {
-                        Ok(mut result) => {
-                            let names = result
-                                .symbols
-                                .iter()
-                                .map(|s| s.name.len().saturating_add(s.qualified_name.len()))
-                                .sum::<usize>();
-                            let details = result
-                                .symbols
-                                .iter()
-                                .map(|s| s.relative_path.as_os_str().len())
-                                .sum::<usize>()
-                                + result
-                                    .diagnostics
-                                    .iter()
-                                    .map(|d| d.relative_path.as_os_str().len() + d.message.len())
-                                    .sum::<usize>();
-                            name_bytes = name_bytes.saturating_add(names);
-                            detail_bytes = detail_bytes.saturating_add(details);
-                            if index.symbols.len().saturating_add(result.symbols.len())
-                                > limits.symbols
-                                || name_bytes > limits.name_bytes
-                                || detail_bytes > limits.detail_bytes
-                                || index
-                                    .diagnostics
-                                    .len()
-                                    .saturating_add(result.diagnostics.len())
-                                    > limits.diagnostics
-                            {
-                                return Err(IndexError::AnalysisLimit);
-                            }
-                            if graph {
-                                if file_count
-                                    .saturating_add(index.symbols.len())
-                                    .saturating_add(result.symbols.len())
-                                    .saturating_add(1)
-                                    > crate::graph::MAX_ENTITIES
-                                {
-                                    return Err(IndexError::GraphLimit);
-                                }
-                                if let Some(extraction) = result.relations.take() {
-                                    relation_bytes =
-                                        relation_bytes
-                                            .saturating_add(
-                                                extraction
-                                                    .candidates
-                                                    .iter()
-                                                    .map(|c| {
-                                                        crate::relations::candidate_bytes(
-                                                            c,
-                                                            &file.relative_path,
-                                                        )
-                                                    })
-                                                    .sum::<usize>(),
-                                            )
-                                            .saturating_add(result.symbols.len().saturating_mul(
-                                                file.relative_path.as_os_str().len(),
-                                            ));
-                                    if relation_bytes > limits.relation_bytes {
-                                        return Err(IndexError::GraphLimit);
-                                    }
-                                    relation_count = relation_count
-                                        .saturating_add(result.symbols.len())
-                                        .saturating_add(extraction.candidates.len());
-                                    if relation_count > crate::graph::MAX_RELATIONS {
-                                        return Err(IndexError::GraphLimit);
-                                    }
-                                    relation_files.push(crate::relations::FileRelations {
-                                        relative_path: file.relative_path.clone(),
-                                        extraction,
-                                    });
-                                }
-                            }
-                            analysis.status = AnalysisStatus::Analyzed;
-                            analysis.symbol_count = result.symbols.len();
-                            analysis.syntax_error_count = result.syntax_error_count;
-                            index.symbols.extend(result.symbols);
-                            index.diagnostics.extend(result.diagnostics);
-                        }
-                        Err(error) => {
-                            let limit_exceeded = matches!(&error, AnalysisError::LimitExceeded);
-                            analysis.status = if limit_exceeded {
-                                AnalysisStatus::AnalysisLimitExceeded
-                            } else {
-                                AnalysisStatus::ParseFailed
-                            };
-                            detail_bytes = detail_bytes.saturating_add(
-                                file.relative_path.as_os_str().len() + error.to_string().len(),
-                            );
-                            if index.diagnostics.len() >= limits.diagnostics
-                                || detail_bytes > limits.detail_bytes
-                            {
-                                return Err(IndexError::AnalysisLimit);
-                            }
-                            index.diagnostics.push(AnalysisDiagnostic {
-                                relative_path: file.relative_path.clone(),
-                                kind: if limit_exceeded {
-                                    DiagnosticKind::AnalysisLimitExceeded
-                                } else {
-                                    DiagnosticKind::ParseFailure
-                                },
-                                message: error.to_string(),
-                                range: None,
-                            });
-                        }
-                    },
-                    Err(status) => {
-                        analysis.status = status;
-                        if status != AnalysisStatus::TooLarge {
-                            let message = if status == AnalysisStatus::InvalidUtf8 {
-                                "source is not valid UTF-8"
-                            } else {
-                                "source unavailable or no longer a safe regular file"
-                            };
-                            detail_bytes = detail_bytes.saturating_add(
-                                file.relative_path.as_os_str().len() + message.len(),
-                            );
-                            if index.diagnostics.len() >= limits.diagnostics
-                                || detail_bytes > limits.detail_bytes
-                            {
-                                return Err(IndexError::AnalysisLimit);
-                            }
-                            index.diagnostics.push(AnalysisDiagnostic {
-                                relative_path: file.relative_path.clone(),
-                                kind: if status == AnalysisStatus::InvalidUtf8 {
-                                    DiagnosticKind::InvalidUtf8
-                                } else {
-                                    DiagnosticKind::ReadError
-                                },
-                                message: message.into(),
-                                range: None,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        index.files.push(analysis);
+        let unit = analyze_file(
+            &index.root,
+            &file,
+            max_parse_file_bytes,
+            graph,
+            &mut registry,
+            &mut loader,
+        )?;
+        totals.add(&unit.symbols, &unit.diagnostics, unit.relations.as_slice());
+        totals.check(graph, limits)?;
+        index.files.push(unit.analysis);
+        index.symbols.extend(unit.symbols);
+        index.diagnostics.extend(unit.diagnostics);
+        relation_files.extend(unit.relations);
     }
     qualify_paths(&mut index);
     index.sort();
     Ok((index, relation_files))
+}
+
+pub(crate) struct FileAnalysisUnit {
+    pub analysis: FileAnalysis,
+    pub symbols: Vec<Symbol>,
+    pub diagnostics: Vec<AnalysisDiagnostic>,
+    pub relations: Option<crate::relations::FileRelations>,
+}
+fn analyze_file<F>(
+    root: &std::path::Path,
+    file: &FileRecord,
+    max_parse_file_bytes: u64,
+    graph: bool,
+    registry: &mut AnalyzerRegistry,
+    loader: &mut F,
+) -> Result<FileAnalysisUnit, IndexError>
+where
+    F: FnMut(&std::path::Path, &FileRecord, u64) -> Result<String, AnalysisStatus>,
+{
+    let mut symbols = vec![];
+    let mut diagnostics = vec![];
+    let mut relation_files = vec![];
+    let mut analysis = FileAnalysis {
+        relative_path: file.relative_path.clone(),
+        language: file.language.clone(),
+        role: file.role,
+        status: AnalysisStatus::UnsupportedLanguage,
+        symbol_count: 0,
+        syntax_error_count: 0,
+    };
+    if let Some(analyzer) = registry.analyzer_for(&file.language) {
+        if matches!(file.role, FileRole::Generated | FileRole::Vendor) {
+            analysis.status = AnalysisStatus::SkippedRole;
+        } else if file.size_bytes > max_parse_file_bytes {
+            analysis.status = AnalysisStatus::TooLarge;
+        } else {
+            match loader(root, file, max_parse_file_bytes) {
+                Ok(text) => match if graph {
+                    analyzer.analyze_graph(&file.relative_path, &text)
+                } else {
+                    analyzer.analyze(&file.relative_path, &text)
+                } {
+                    Ok(mut result) => {
+                        if graph && let Some(extraction) = result.relations.take() {
+                            relation_files.push(crate::relations::FileRelations {
+                                relative_path: file.relative_path.clone(),
+                                extraction,
+                            });
+                        }
+                        analysis.status = AnalysisStatus::Analyzed;
+                        analysis.symbol_count = result.symbols.len();
+                        analysis.syntax_error_count = result.syntax_error_count;
+                        symbols.extend(result.symbols);
+                        diagnostics.extend(result.diagnostics);
+                    }
+                    Err(error) => {
+                        let limit_exceeded = matches!(&error, AnalysisError::LimitExceeded);
+                        analysis.status = if limit_exceeded {
+                            AnalysisStatus::AnalysisLimitExceeded
+                        } else {
+                            AnalysisStatus::ParseFailed
+                        };
+                        diagnostics.push(AnalysisDiagnostic {
+                            relative_path: file.relative_path.clone(),
+                            kind: if limit_exceeded {
+                                DiagnosticKind::AnalysisLimitExceeded
+                            } else {
+                                DiagnosticKind::ParseFailure
+                            },
+                            message: error.to_string(),
+                            range: None,
+                        });
+                    }
+                },
+                Err(status) => {
+                    analysis.status = status;
+                    if status != AnalysisStatus::TooLarge {
+                        let message = if status == AnalysisStatus::InvalidUtf8 {
+                            "source is not valid UTF-8"
+                        } else {
+                            "source unavailable or no longer a safe regular file"
+                        };
+                        diagnostics.push(AnalysisDiagnostic {
+                            relative_path: file.relative_path.clone(),
+                            kind: if status == AnalysisStatus::InvalidUtf8 {
+                                DiagnosticKind::InvalidUtf8
+                            } else {
+                                DiagnosticKind::ReadError
+                            },
+                            message: message.into(),
+                            range: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(FileAnalysisUnit {
+        analysis,
+        symbols,
+        diagnostics,
+        relations: relation_files.pop(),
+    })
+}
+
+pub(crate) fn validate_analysis(
+    index: &RepositoryIndex,
+    relations: &[crate::relations::FileRelations],
+) -> Result<(), IndexError> {
+    validate_with_limits(index, relations, true, REPOSITORY_LIMITS)
+}
+fn validate_with_limits(
+    index: &RepositoryIndex,
+    relations: &[crate::relations::FileRelations],
+    graph: bool,
+    limits: RepositoryLimits,
+) -> Result<(), IndexError> {
+    let mut totals = AnalysisTotals {
+        files: index.files.len(),
+        relation_bytes: index
+            .files
+            .iter()
+            .map(|f| f.relative_path.as_os_str().len())
+            .sum(),
+        ..AnalysisTotals::default()
+    };
+    totals.add(&index.symbols, &index.diagnostics, relations);
+    totals.check(graph, limits)
+}
+#[derive(Default)]
+struct AnalysisTotals {
+    files: usize,
+    symbols: usize,
+    names: usize,
+    details: usize,
+    diagnostics: usize,
+    candidates: usize,
+    relation_bytes: usize,
+}
+impl AnalysisTotals {
+    fn add(
+        &mut self,
+        symbols: &[Symbol],
+        diagnostics: &[AnalysisDiagnostic],
+        relations: &[crate::relations::FileRelations],
+    ) {
+        self.symbols += symbols.len();
+        self.diagnostics += diagnostics.len();
+        for symbol in symbols {
+            self.names += symbol.name.len() + symbol.qualified_name.len();
+            self.details += symbol.relative_path.as_os_str().len();
+            self.relation_bytes += symbol.relative_path.as_os_str().len();
+        }
+        for diagnostic in diagnostics {
+            self.details += diagnostic.relative_path.as_os_str().len() + diagnostic.message.len();
+        }
+        for file in relations {
+            self.candidates += file.extraction.candidates.len();
+            for candidate in &file.extraction.candidates {
+                self.relation_bytes +=
+                    crate::relations::candidate_bytes(candidate, &file.relative_path);
+            }
+        }
+    }
+    fn check(&self, graph: bool, limits: RepositoryLimits) -> Result<(), IndexError> {
+        if self.symbols > limits.symbols
+            || self.names > limits.name_bytes
+            || self.details > limits.detail_bytes
+            || self.diagnostics > limits.diagnostics
+        {
+            return Err(IndexError::AnalysisLimit);
+        }
+        if graph
+            && (self.files + self.symbols + 1 > crate::graph::MAX_ENTITIES
+                || self.files + self.symbols + self.candidates > crate::graph::MAX_RELATIONS
+                || self.relation_bytes > limits.relation_bytes)
+        {
+            return Err(IndexError::GraphLimit);
+        }
+        Ok(())
+    }
 }
 pub(crate) fn qualify_paths(index: &mut RepositoryIndex) {
     // Preserve Phase 0's explicit qualification of lossy native paths.
@@ -398,6 +433,77 @@ mod tests {
             ),
             Err(IndexError::AnalysisLimit)
         ));
+    }
+    #[test]
+    fn merged_retained_and_changed_units_obey_all_aggregate_limits() {
+        let root = tempfile::tempdir().unwrap();
+        for name in ["a.py", "b.py"] {
+            std::fs::write(
+                root.path().join(name),
+                "import outside as alias\ndef f(): pass\ndef broken(\n",
+            )
+            .unwrap();
+        }
+        let scan = || {
+            crate::scan::scan_repository(&ScanOptions {
+                root: root.path().into(),
+                count_lines: false,
+                max_line_count_file_bytes: 0,
+                probe_git: false,
+            })
+            .unwrap()
+        };
+        let mut a = scan();
+        a.files
+            .retain(|f| f.relative_path == std::path::Path::new("a.py"));
+        let mut b = scan();
+        b.files
+            .retain(|f| f.relative_path == std::path::Path::new("b.py"));
+        let (mut retained, mut relations) = analyze_scan(a, 1024, true).unwrap();
+        let (changed, changed_relations) = analyze_scan(b, 1024, true).unwrap();
+        let mut totals = AnalysisTotals {
+            files: retained.files.len(),
+            relation_bytes: 4,
+            ..AnalysisTotals::default()
+        };
+        totals.add(&retained.symbols, &retained.diagnostics, &relations);
+        let limits = RepositoryLimits {
+            symbols: totals.symbols,
+            diagnostics: totals.diagnostics,
+            name_bytes: totals.names,
+            detail_bytes: totals.details,
+            relation_bytes: totals.relation_bytes,
+        };
+        assert!(validate_with_limits(&retained, &relations, true, limits).is_ok());
+        assert!(validate_with_limits(&changed, &changed_relations, true, limits).is_ok());
+        retained.files.extend(changed.files);
+        retained.symbols.extend(changed.symbols);
+        retained.diagnostics.extend(changed.diagnostics);
+        relations.extend(changed_relations);
+        for limit in [
+            RepositoryLimits {
+                symbols: limits.symbols,
+                ..REPOSITORY_LIMITS
+            },
+            RepositoryLimits {
+                diagnostics: limits.diagnostics,
+                ..REPOSITORY_LIMITS
+            },
+            RepositoryLimits {
+                name_bytes: limits.name_bytes,
+                ..REPOSITORY_LIMITS
+            },
+            RepositoryLimits {
+                detail_bytes: limits.detail_bytes,
+                ..REPOSITORY_LIMITS
+            },
+            RepositoryLimits {
+                relation_bytes: limits.relation_bytes,
+                ..REPOSITORY_LIMITS
+            },
+        ] {
+            assert!(validate_with_limits(&retained, &relations, true, limit).is_err());
+        }
     }
     #[test]
     fn disappearing_source_is_recoverable() {

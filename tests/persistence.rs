@@ -173,3 +173,82 @@ fn storage_failure_and_override_validation_do_not_pollute_stdout_or_repository()
     }
     assert!(!root.path().join("cache").exists());
 }
+
+#[test]
+fn incremental_consumers_match_force_rebuild_and_old_schema_recovers() {
+    let root = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("stable.rs"), "fn retained() {}\n").unwrap();
+    fs::write(
+        root.path().join("a.py"),
+        "import os\ndef old():\n    old()\n\ndef broken(\n",
+    )
+    .unwrap();
+    run(root.path(), cache.path(), &["index"]);
+    let db = database(cache.path());
+    fs::write(root.path().join("a.py"), "def current(): pass\n").unwrap();
+    fs::write(root.path().join("b.py"), "def added(): pass\n").unwrap();
+    let commands: &[&[&str]] = &[
+        &["symbols"],
+        &["graph"],
+        &["search", "old"],
+        &["neighborhood", "--symbol", "current"],
+        &["hotspots"],
+        &["context", "--task", "current", "--budget", "1000"],
+    ];
+    let incremented: Vec<_> = commands
+        .iter()
+        .map(|args| run(root.path(), cache.path(), args))
+        .collect();
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    for table in ["candidates", "diagnostics"] {
+        let count: i64 = conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "stale {table} survived");
+    }
+    drop(conn);
+    run(root.path(), cache.path(), &["index"]);
+    for (args, expected) in commands.iter().zip(incremented) {
+        assert_eq!(expected, run(root.path(), cache.path(), args));
+    }
+    fs::rename(root.path().join("b.py"), root.path().join("renamed.py")).unwrap();
+    fs::remove_file(root.path().join("a.py")).unwrap();
+    let renamed = run(root.path(), cache.path(), &["graph"]);
+    let text = String::from_utf8_lossy(&renamed);
+    assert!(text.contains("renamed.py"));
+    assert!(!text.contains("b.py") && !text.contains("a.py"));
+    run(root.path(), cache.path(), &["index"]);
+    assert_eq!(renamed, run(root.path(), cache.path(), &["graph"]));
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute_batch("PRAGMA user_version=2")
+        .unwrap();
+    assert_eq!(renamed, run(root.path(), cache.path(), &["graph"]));
+    let schema: i64 = rusqlite::Connection::open(&db)
+        .unwrap()
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(schema, 3);
+}
+
+#[test]
+fn watch_help_rejects_machine_stream_and_missing_root() {
+    ctx()
+        .args(["watch", "--help"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("--max-parse-file-size"));
+    ctx()
+        .args(["watch", "--format", "json"])
+        .assert()
+        .failure()
+        .stdout("");
+    let root = tempfile::tempdir().unwrap();
+    ctx()
+        .arg("watch")
+        .arg(root.path().join("missing"))
+        .assert()
+        .failure()
+        .stdout("");
+}

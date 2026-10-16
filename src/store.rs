@@ -1,4 +1,4 @@
-//! SQLite schema-v2. Native paths live in BLOB columns; each structural record
+//! SQLite schema-v3. Native paths live in BLOB columns; each structural record
 //! has an explicit named JSON codec. No graph IDs, operational metadata or bodies.
 use crate::{
     model::*,
@@ -13,11 +13,11 @@ use std::{
     time::Duration,
 };
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 const MAX_DB_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_PAYLOAD_BYTES: i64 = 32 * 1024 * 1024;
 const MAX_ROW_BYTES: usize = 1024 * 1024;
-const ARTIFACT_INTEGRITY_VERSION: &str = "blake3-rows-v1";
+const ARTIFACT_INTEGRITY_VERSION: &str = "blake3-rows-v2";
 #[cfg(unix)]
 pub const PATH_CODEC: &str = "unix_bytes_v1";
 #[cfg(windows)]
@@ -26,6 +26,9 @@ pub const PATH_CODEC: &str = "windows_wide_le_v1";
 pub enum StoreError {
     #[error("cache missing")]
     Missing,
+    #[error("store generation conflict; reload and reconcile")]
+    Conflict,
+    #[cfg(test)]
     #[error("stale cache fingerprint")]
     Stale,
     #[error("incompatible cache schema, analysis version, or path codec")]
@@ -40,6 +43,17 @@ pub enum StoreError {
     Codec(#[from] serde_json::Error),
 }
 type Result<T> = std::result::Result<T, StoreError>;
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FileInput {
+    pub size: u64,
+    pub stamp: [u8; 32],
+}
+pub type Inputs = BTreeMap<PathBuf, FileInput>;
+pub struct Snapshot {
+    pub artifact: AnalysisArtifact,
+    pub inputs: Inputs,
+    pub generation: [u8; 32],
+}
 struct CacheMetadata {
     compat: i64,
     fingerprint: String,
@@ -135,6 +149,14 @@ fn preflight_with_limit(conn: &Connection, max_payload: i64) -> Result<()> {
             return Err(StoreError::Invalid);
         }
     }
+    let (input_bytes, largest): (i64, i64) = conn.query_row(
+        "SELECT coalesce(sum(length(input)),0),coalesce(max(length(input)),0) FROM files",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    if largest > MAX_ROW_BYTES as i64 || total.saturating_add(input_bytes) > max_payload {
+        return Err(StoreError::Invalid);
+    }
     let paths: i64 =
         conn.query_row("SELECT coalesce(sum(length(path)),0) FROM files", [], |r| {
             r.get(0)
@@ -156,7 +178,10 @@ fn artifact_digest(conn: &Connection) -> Result<Vec<u8>> {
     let mut hash = blake3::Hasher::new();
     digest_field(&mut hash, ARTIFACT_INTEGRITY_VERSION.as_bytes());
     for (table, query) in [
-        ("files", "SELECT id,path,payload FROM files ORDER BY id"),
+        (
+            "files",
+            "SELECT id,path,input,payload FROM files ORDER BY id",
+        ),
         (
             "symbols",
             "SELECT file,ordinal,payload FROM symbols ORDER BY file,ordinal",
@@ -179,7 +204,7 @@ fn artifact_digest(conn: &Connection) -> Result<Vec<u8>> {
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let columns = match table {
-                "files" => 3,
+                "files" => 4,
                 "extractions" => 2,
                 _ => 3,
             };
@@ -190,7 +215,7 @@ fn artifact_digest(conn: &Connection) -> Result<Vec<u8>> {
                         .as_blob()
                         .map_err(|_| StoreError::Invalid)?;
                     digest_field(&mut hash, blob);
-                } else if table == "files" && col == 1 {
+                } else if table == "files" && (col == 1 || col == 2) {
                     let blob = row
                         .get_ref(col)?
                         .as_blob()
@@ -205,7 +230,13 @@ fn artifact_digest(conn: &Connection) -> Result<Vec<u8>> {
     }
     Ok(hash.finalize().as_bytes().to_vec())
 }
-pub fn save(path: &Path, artifact: &AnalysisArtifact, max: u64, stamp: &[u8; 32]) -> Result<()> {
+pub fn save_snapshot(
+    path: &Path,
+    artifact: &AnalysisArtifact,
+    max: u64,
+    stamp: &[u8; 32],
+    inputs: &Inputs,
+) -> Result<()> {
     std::fs::create_dir_all(path.parent().ok_or(StoreError::Invalid)?)?;
     // Build a complete replacement beside the destination. Failed writes leave
     // the prior snapshot intact; open readers retain their original snapshot.
@@ -217,7 +248,7 @@ pub fn save(path: &Path, artifact: &AnalysisArtifact, max: u64, stamp: &[u8; 32]
         let tx = conn.transaction()?;
         tx.execute_batch(&format!("PRAGMA user_version={SCHEMA_VERSION};
             CREATE TABLE meta (id INTEGER PRIMARY KEY CHECK(id=1), compat INTEGER NOT NULL, fingerprint_version TEXT NOT NULL, codec TEXT NOT NULL, root BLOB NOT NULL, parse_limit TEXT NOT NULL, stamp BLOB NOT NULL, integrity_version TEXT NOT NULL, artifact_digest BLOB NOT NULL);
-            CREATE TABLE files (id INTEGER PRIMARY KEY, path BLOB NOT NULL UNIQUE, payload BLOB NOT NULL);
+            CREATE TABLE files (id INTEGER PRIMARY KEY, path BLOB NOT NULL UNIQUE, input BLOB NOT NULL, payload BLOB NOT NULL);
             CREATE TABLE symbols (file INTEGER NOT NULL REFERENCES files(id), ordinal INTEGER NOT NULL, payload BLOB NOT NULL, PRIMARY KEY(file,ordinal));
             CREATE TABLE diagnostics (file INTEGER NOT NULL REFERENCES files(id), ordinal INTEGER NOT NULL, payload BLOB NOT NULL, PRIMARY KEY(file,ordinal));
             CREATE TABLE extractions (file INTEGER PRIMARY KEY REFERENCES files(id), payload BLOB NOT NULL);
@@ -235,59 +266,86 @@ pub fn save(path: &Path, artifact: &AnalysisArtifact, max: u64, stamp: &[u8; 32]
                 Vec::<u8>::new()
             ],
         )?;
-        let mut ids = BTreeMap::new();
-        let mut used_ids = BTreeSet::new();
-        for file in &artifact.index.files {
-            let id = file_id(&file.relative_path);
-            if !used_ids.insert(id) {
-                return Err(StoreError::Invalid);
-            }
-            ids.insert(file.relative_path.as_path(), id);
-            tx.execute(
-                "INSERT INTO files VALUES(?1,?2,?3)",
-                params![id, native_bytes(&file.relative_path), encode(file)?],
-            )?;
-        }
-        let mut ordinals = BTreeMap::<i64, i64>::new();
-        for symbol in &artifact.index.symbols {
-            let file = *ids
-                .get(symbol.relative_path.as_path())
-                .ok_or(StoreError::Invalid)?;
-            let ordinal = ordinals.entry(file).or_default();
-            insert(&tx, "symbols", *ordinal as usize, file, symbol)?;
-            *ordinal += 1;
-        }
-        ordinals.clear();
-        for diagnostic in &artifact.index.diagnostics {
-            let file = *ids
-                .get(diagnostic.relative_path.as_path())
-                .ok_or(StoreError::Invalid)?;
-            let ordinal = ordinals.entry(file).or_default();
-            insert(&tx, "diagnostics", *ordinal as usize, file, diagnostic)?;
-            *ordinal += 1;
-        }
-        for file in &artifact.relation_files {
-            let id = *ids
-                .get(file.relative_path.as_path())
-                .ok_or(StoreError::Invalid)?;
-            tx.execute(
-                "INSERT INTO extractions VALUES(?1,?2)",
-                params![
-                    id,
-                    encode(&(file.extraction.status, file.extraction.unsupported))?
-                ],
-            )?;
-            for (ordinal, candidate) in file.extraction.candidates.iter().enumerate() {
-                insert(&tx, "candidates", ordinal, id, candidate)?;
-            }
-        }
+        write_records(&tx, artifact, inputs, None)?;
         preflight(&tx)?;
         let digest = artifact_digest(&tx)?;
         tx.execute("UPDATE meta SET artifact_digest=?1 WHERE id=1", [digest])?;
+        read_snapshot(&tx, &artifact.index.root, max)?;
         tx.commit()?;
     }
     temp.as_file().sync_all()?;
     temp.persist(path).map_err(|e| StoreError::Io(e.error))?;
+    Ok(())
+}
+fn write_records(
+    conn: &Connection,
+    artifact: &AnalysisArtifact,
+    inputs: &Inputs,
+    selected: Option<&BTreeSet<PathBuf>>,
+) -> Result<()> {
+    let mut ids = BTreeMap::new();
+    let mut used_ids = BTreeSet::new();
+    for file in &artifact.index.files {
+        if selected.is_some_and(|s| !s.contains(&file.relative_path)) {
+            continue;
+        }
+        let id = file_id(&file.relative_path);
+        if !used_ids.insert(id) {
+            return Err(StoreError::Invalid);
+        }
+        ids.insert(file.relative_path.as_path(), id);
+        conn.execute(
+            "INSERT INTO files VALUES(?1,?2,?3,?4)",
+            params![
+                id,
+                native_bytes(&file.relative_path),
+                encode(inputs.get(&file.relative_path).ok_or(StoreError::Invalid)?)?,
+                encode(file)?
+            ],
+        )?;
+    }
+    let mut ordinals = BTreeMap::<i64, i64>::new();
+    for symbol in &artifact.index.symbols {
+        if selected.is_some_and(|s| !s.contains(&symbol.relative_path)) {
+            continue;
+        }
+        let file = *ids
+            .get(symbol.relative_path.as_path())
+            .ok_or(StoreError::Invalid)?;
+        let ordinal = ordinals.entry(file).or_default();
+        insert(conn, "symbols", *ordinal as usize, file, symbol)?;
+        *ordinal += 1;
+    }
+    ordinals.clear();
+    for diagnostic in &artifact.index.diagnostics {
+        if selected.is_some_and(|s| !s.contains(&diagnostic.relative_path)) {
+            continue;
+        }
+        let file = *ids
+            .get(diagnostic.relative_path.as_path())
+            .ok_or(StoreError::Invalid)?;
+        let ordinal = ordinals.entry(file).or_default();
+        insert(conn, "diagnostics", *ordinal as usize, file, diagnostic)?;
+        *ordinal += 1;
+    }
+    for file in &artifact.relation_files {
+        if selected.is_some_and(|s| !s.contains(&file.relative_path)) {
+            continue;
+        }
+        let id = *ids
+            .get(file.relative_path.as_path())
+            .ok_or(StoreError::Invalid)?;
+        conn.execute(
+            "INSERT INTO extractions VALUES(?1,?2)",
+            params![
+                id,
+                encode(&(file.extraction.status, file.extraction.unsupported))?
+            ],
+        )?;
+        for (ordinal, candidate) in file.extraction.candidates.iter().enumerate() {
+            insert(conn, "candidates", ordinal, id, candidate)?;
+        }
+    }
     Ok(())
 }
 fn insert(
@@ -304,12 +362,7 @@ fn insert(
     )?;
     Ok(())
 }
-pub fn load(
-    path: &Path,
-    scan: &RepositoryScan,
-    max: u64,
-    stamp: &[u8; 32],
-) -> Result<AnalysisArtifact> {
+pub fn load_snapshot(path: &Path, root: &Path, max: u64) -> Result<Snapshot> {
     let meta = match std::fs::symlink_metadata(path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(StoreError::Missing),
@@ -324,6 +377,9 @@ pub fn load(
     )?;
     setup(&conn)?;
     let tx = conn.transaction()?;
+    read_snapshot(&tx, root, max)
+}
+fn read_snapshot(tx: &Connection, root: &Path, max: u64) -> Result<Snapshot> {
     let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if version != SCHEMA_VERSION {
         return Err(StoreError::Incompatible);
@@ -347,17 +403,15 @@ pub fn load(
     if metadata.compat != INDEX_COMPAT_VERSION
         || metadata.fingerprint != FINGERPRINT_VERSION
         || metadata.codec != PATH_CODEC
-        || metadata.root != native_bytes(&scan.root)
+        || metadata.root != native_bytes(root)
         || metadata.limit != max.to_string()
     {
         return Err(StoreError::Incompatible);
     }
-    if metadata.stamp != stamp {
-        return Err(StoreError::Stale);
-    }
-    preflight(&tx)?;
+    let generation: [u8; 32] = metadata.stamp.try_into().map_err(|_| StoreError::Invalid)?;
+    preflight(tx)?;
     if metadata.integrity_version != ARTIFACT_INTEGRITY_VERSION
-        || artifact_digest(&tx)? != metadata.artifact_digest
+        || artifact_digest(tx)? != metadata.artifact_digest
     {
         return Err(StoreError::Invalid);
     }
@@ -365,43 +419,27 @@ pub fn load(
     if check.query([])?.next()?.is_some() {
         return Err(StoreError::Invalid);
     }
-    let current_ids: BTreeMap<_, _> = scan
-        .files
-        .iter()
-        .enumerate()
-        .map(|(i, file)| (file.relative_path.as_path(), i))
-        .collect();
-    let mut files: Vec<Option<FileAnalysis>> = std::iter::repeat_with(|| None)
-        .take(scan.files.len())
-        .collect();
+    let mut inputs = Inputs::new();
+    let mut files = vec![];
     let mut storage_ids = BTreeMap::new();
-    let mut statement = tx.prepare("SELECT id,path,payload FROM files ORDER BY path")?;
+    let mut statement = tx.prepare("SELECT id,path,input,payload FROM files ORDER BY path")?;
     let mut rows = statement.query([])?;
     while let Some(row) = rows.next()? {
         let id: i64 = row.get(0)?;
         let path = native_path(row.get(1)?)?;
+        let input: FileInput = decode(row.get_ref(2)?.as_blob().map_err(|_| StoreError::Invalid)?)?;
         let mut file: FileAnalysis =
-            decode(row.get_ref(2)?.as_blob().map_err(|_| StoreError::Invalid)?)?;
-        let ordinal = *current_ids.get(path.as_path()).ok_or(StoreError::Invalid)?;
-        let current = &scan.files[ordinal];
-        if !valid_path(&path)
-            || id != file_id(&path)
-            || file.language != current.language
-            || file.role != current.role
-            || files[ordinal].is_some()
-        {
+            decode(row.get_ref(3)?.as_blob().map_err(|_| StoreError::Invalid)?)?;
+        if !valid_path(&path) || id != file_id(&path) {
             return Err(StoreError::Invalid);
         }
-        file.relative_path = path;
-        storage_ids.insert(id, ordinal);
-        files[ordinal] = Some(file);
+        file.relative_path = path.clone();
+        inputs.insert(path, input);
+        storage_ids.insert(id, files.len());
+        files.push(file);
     }
-    if files.iter().any(Option::is_none) {
-        return Err(StoreError::Invalid);
-    }
-    let files: Vec<FileAnalysis> = files.into_iter().map(Option::unwrap).collect();
     let mut index = RepositoryIndex {
-        root: scan.root.clone(),
+        root: root.to_path_buf(),
         git: None,
         scan_warnings: vec![],
         files,
@@ -411,14 +449,14 @@ pub fn load(
     let mut symbol_counts = vec![0usize; index.files.len()];
     let mut names = 0usize;
     let mut details = 0usize;
-    read_records(&tx, "symbols", &storage_ids, |id, bytes| {
+    read_records(tx, "symbols", &storage_ids, |id, bytes| {
         let file = index.files.get(id).ok_or(StoreError::Invalid)?;
         let mut s: Symbol = decode(bytes)?;
         if s.language != file.language || file.status != AnalysisStatus::Analyzed {
             return Err(StoreError::Invalid);
         }
-        validate_range(s.range, scan.files[id].size_bytes)?;
-        validate_range(s.name_range, scan.files[id].size_bytes)?;
+        validate_range(s.range, inputs[&index.files[id].relative_path].size)?;
+        validate_range(s.name_range, inputs[&index.files[id].relative_path].size)?;
         if s.name_range.start.byte < s.range.start.byte || s.name_range.end.byte > s.range.end.byte
         {
             return Err(StoreError::Invalid);
@@ -444,7 +482,7 @@ pub fn load(
     {
         return Err(StoreError::Invalid);
     }
-    read_records(&tx, "diagnostics", &storage_ids, |id, bytes| {
+    read_records(tx, "diagnostics", &storage_ids, |id, bytes| {
         let mut d: AnalysisDiagnostic = decode(bytes)?;
         d.relative_path = index
             .files
@@ -453,7 +491,7 @@ pub fn load(
             .relative_path
             .clone();
         if let Some(range) = d.range {
-            validate_range(range, scan.files[id].size_bytes)?;
+            validate_range(range, inputs[&index.files[id].relative_path].size)?;
         }
         details = details
             .saturating_add(d.relative_path.as_os_str().len())
@@ -506,11 +544,16 @@ pub fn load(
             .map(|s| s.relative_path.as_os_str().len())
             .sum::<usize>();
     let mut relation_count = index.files.len() + index.symbols.len();
-    read_records(&tx, "candidates", &storage_ids, |id, bytes| {
+    read_records(tx, "candidates", &storage_ids, |id, bytes| {
         let c: Candidate = decode(bytes)?;
         validate_range(
             c.range,
-            scan.files.get(id).ok_or(StoreError::Invalid)?.size_bytes,
+            inputs[&index
+                .files
+                .get(id)
+                .ok_or(StoreError::Invalid)?
+                .relative_path]
+                .size,
         )?;
         let extraction = extractions.get_mut(&id).ok_or(StoreError::Invalid)?;
         if extraction.status != RelationStatus::Analyzed
@@ -543,21 +586,120 @@ pub fn load(
     if relation_bytes > crate::graph::MAX_RELATION_BYTES {
         return Err(StoreError::Invalid);
     }
-    let relation_files = extractions
+    let relation_files: Vec<_> = extractions
         .into_iter()
         .map(|(id, extraction)| FileRelations {
             relative_path: index.files[id].relative_path.clone(),
             extraction,
         })
         .collect();
-    // Current scan metadata is authoritative even on a warm structural hit.
-    index.git = scan.git.as_ref().map(|g| GitMetadata {
+    if crate::persistence::generation(&inputs, max) != generation {
+        return Err(StoreError::Invalid);
+    }
+    crate::index::validate_analysis(&index, &relation_files).map_err(|_| StoreError::Invalid)?;
+    index.sort();
+    Ok(Snapshot {
+        artifact: AnalysisArtifact {
+            index,
+            relation_files,
+        },
+        inputs,
+        generation,
+    })
+}
+
+/// Compare-and-swap a trusted snapshot under a SQLite write reservation. Only
+/// changed/deleted ownership groups are touched; any error rolls the transaction back.
+pub fn patch(
+    path: &Path,
+    expected: &[u8; 32],
+    artifact: &AnalysisArtifact,
+    max: u64,
+    stamp: &[u8; 32],
+    inputs: &Inputs,
+) -> Result<()> {
+    let mut conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    setup(&conn)?;
+    conn.execute_batch("PRAGMA max_page_count=32768;")?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let old = read_snapshot(&tx, &artifact.index.root, max)?;
+    if &old.generation != expected {
+        return Err(StoreError::Conflict);
+    }
+    let changed: BTreeSet<_> = inputs
+        .iter()
+        .filter(|(p, i)| old.inputs.get(*p) != Some(*i))
+        .map(|(p, _)| p.clone())
+        .collect();
+    for path in old
+        .inputs
+        .keys()
+        .filter(|p| !inputs.contains_key(*p) || changed.contains(*p))
+    {
+        let id = file_id(path);
+        for table in ["candidates", "extractions", "symbols", "diagnostics"] {
+            tx.execute(&format!("DELETE FROM {table} WHERE file=?1"), [id])?;
+        }
+        tx.execute("DELETE FROM files WHERE id=?1", [id])?;
+    }
+    write_records(&tx, artifact, inputs, Some(&changed))?;
+    preflight(&tx)?;
+    tx.execute(
+        "UPDATE meta SET stamp=?1, artifact_digest=?2 WHERE id=1",
+        params![stamp.as_slice(), artifact_digest(&tx)?],
+    )?;
+    read_snapshot(&tx, &artifact.index.root, max)?;
+    tx.commit()?;
+    Ok(())
+}
+
+#[cfg(test)]
+fn save(path: &Path, artifact: &AnalysisArtifact, max: u64, stamp: &[u8; 32]) -> Result<()> {
+    // Store codec tests inject native paths without creating source files.
+    let inputs = artifact
+        .index
+        .files
+        .iter()
+        .map(|f| {
+            (
+                f.relative_path.clone(),
+                FileInput {
+                    size: max,
+                    stamp: *stamp,
+                },
+            )
+        })
+        .collect();
+    save_snapshot(
+        path,
+        artifact,
+        max,
+        &crate::persistence::generation(&inputs, max),
+        &inputs,
+    )
+}
+#[cfg(test)]
+fn load(
+    path: &Path,
+    scan: &RepositoryScan,
+    max: u64,
+    stamp: &[u8; 32],
+) -> Result<AnalysisArtifact> {
+    let snapshot = load_snapshot(path, &scan.root, max)?;
+    if snapshot.inputs.values().any(|i| &i.stamp != stamp) {
+        return Err(StoreError::Stale);
+    }
+    let mut artifact = snapshot.artifact;
+    artifact.index.git = scan.git.as_ref().map(|g| GitMetadata {
         repository_root: g.repository_root.clone(),
         head_commit: g.head_commit.clone(),
         branch: g.branch.clone(),
         is_dirty: g.is_dirty,
     });
-    index.scan_warnings = scan
+    artifact.index.scan_warnings = scan
         .warnings
         .iter()
         .map(|w| ScanWarning {
@@ -565,13 +707,10 @@ pub fn load(
             message: w.message.clone(),
         })
         .collect();
-    crate::index::qualify_paths(&mut index);
-    index.sort();
-    Ok(AnalysisArtifact {
-        index,
-        relation_files,
-    })
+    crate::index::qualify_paths(&mut artifact.index);
+    Ok(artifact)
 }
+
 fn read_records(
     conn: &Connection,
     table: &str,
@@ -707,9 +846,11 @@ mod tests {
         let path = cache.path().join("cache.sqlite3");
         for sql in [
             "PRAGMA user_version=1",
+            "PRAGMA user_version=2",
             "PRAGMA user_version=9",
             "UPDATE meta SET codec='unknown'",
             "UPDATE meta SET compat=99",
+            "UPDATE meta SET stamp=zeroblob(32)",
             "UPDATE files SET payload=replace(cast(payload as text),'analyzed','future_status')",
             "UPDATE symbols SET ordinal=999 WHERE ordinal=0",
             "UPDATE symbols SET file=999 WHERE ordinal=0",
@@ -877,5 +1018,95 @@ mod tests {
         assert_eq!(loaded.index.files[1].relative_path, path);
         assert_eq!(loaded.index.symbols[0].relative_path, path);
         assert_eq!(loaded.relation_files[0].relative_path, path);
+        let snapshot = load_snapshot(&db, &scan.root, 1024).unwrap();
+        let mut inputs = snapshot.inputs;
+        inputs.get_mut(&path).unwrap().stamp = [2; 32];
+        artifact.index.symbols[0].name = "updated_native".into();
+        let generation = crate::persistence::generation(&inputs, 1024);
+        patch(
+            &db,
+            &snapshot.generation,
+            &artifact,
+            1024,
+            &generation,
+            &inputs,
+        )
+        .unwrap();
+        let updated = load_snapshot(&db, &scan.root, 1024).unwrap();
+        assert_eq!(updated.artifact.index.symbols[0].relative_path, path);
+        assert_eq!(updated.artifact.index.symbols[0].name, "updated_native");
+    }
+    #[test]
+    fn stale_writer_conflicts_and_patch_rolls_back_owned_rows() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let db = cache.path().join("cache.sqlite3");
+        let (_, artifact) = fixture(root.path());
+        save(&db, &artifact, 1024, &[1; 32]).unwrap();
+        let snapshot = load_snapshot(&db, &root.path().canonicalize().unwrap(), 1024).unwrap();
+        let old_generation = snapshot.generation;
+        let mut inputs = snapshot.inputs;
+        inputs.get_mut(Path::new("a.py")).unwrap().stamp = [2; 32];
+        let new_generation = crate::persistence::generation(&inputs, 1024);
+        patch(
+            &db,
+            &old_generation,
+            &artifact,
+            1024,
+            &new_generation,
+            &inputs,
+        )
+        .unwrap();
+        let prior = std::fs::read(&db).unwrap();
+        assert!(matches!(
+            patch(
+                &db,
+                &old_generation,
+                &artifact,
+                1024,
+                &new_generation,
+                &inputs
+            ),
+            Err(StoreError::Conflict)
+        ));
+        assert_eq!(prior, std::fs::read(&db).unwrap());
+        // Failure after DELETE/INSERT must restore children, stamps and metadata.
+        let mut invalid = artifact;
+        invalid.index.symbols[0].name = "x".repeat(MAX_ROW_BYTES + 1);
+        inputs.get_mut(Path::new("a.py")).unwrap().stamp = [3; 32];
+        assert!(
+            patch(
+                &db,
+                &new_generation,
+                &invalid,
+                1024,
+                &crate::persistence::generation(&inputs, 1024),
+                &inputs
+            )
+            .is_err()
+        );
+        assert_eq!(prior, std::fs::read(&db).unwrap());
+        let still_valid = load_snapshot(&db, &root.path().canonicalize().unwrap(), 1024).unwrap();
+        assert_eq!(still_valid.generation, new_generation);
+        assert_eq!(still_valid.artifact.index.symbols[0].name, "one");
+    }
+    #[test]
+    fn input_stamps_are_bounded_and_integrity_covered() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let db = cache.path().join("cache.sqlite3");
+        let (_, artifact) = fixture(root.path());
+        for mutation in [
+            "UPDATE files SET input=CAST(json_set(CAST(input AS TEXT),'$.stamp[0]',99) AS BLOB)",
+            "UPDATE files SET input=CAST(json_set(CAST(input AS TEXT),'$.size',999999) AS BLOB)",
+            "UPDATE files SET input=x'00'",
+        ] {
+            save(&db, &artifact, 1024, &[1; 32]).unwrap();
+            Connection::open(&db)
+                .unwrap()
+                .execute_batch(mutation)
+                .unwrap();
+            assert!(load_snapshot(&db, &root.path().canonicalize().unwrap(), 1024).is_err());
+        }
     }
 }

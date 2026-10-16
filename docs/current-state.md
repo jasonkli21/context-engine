@@ -2,24 +2,38 @@
 
 **Last updated:** 2026-10-16
 
-**Active phase:** Phase 6 — Persistent Index
+**Active phase:** Phase 7 — Incremental Indexing
 
-**Overall status:** Phase 6 implemented and locally verified; fresh independent review required
+**Overall status:** Phase 7 implemented and locally verified; fresh independent review required
 
 ## Delivered
+
+- Phase 7 automatically reconciles trusted stale snapshots by native path and
+  file-input stamp. Only changed/new eligible files are parsed; deleted groups
+  disappear and renames become delete-plus-add. Full and incremental analysis use
+  the same per-file primitive and aggregate-limit accounting.
+- Schema v3 / `freshness-v2` / analysis compatibility v1 persist integrity-covered
+  file stamps and sizes. Repository generations derive from canonical sorted
+  stamps. SQLite file-local transactions validate the expected generation and
+  roll back failures; conflicts and whole-input pre/post mutation retry once.
+- Graphs reconstruct canonically from merged evidence. `index` remains force-full
+  repair. `watch` registers before initial reconciliation and coalesces filesystem
+  hints through a bounded queue; overflow/errors rescan deterministically. The CLI
+  alone emits watch status/warnings to stderr. No async/service/parallel parsing.
+  Evidence: [Phase 7 report](reports/phase-7-implementation-report.md).
 
 - Phase 6 adds a versioned external SQLite cache of file analysis, symbols,
   diagnostics and parser-extracted relation candidates. All current intelligence
   consumers share validated full-analysis reuse; graphs reconstruct through the
   existing constructor. `index` forces rebuild and requires a committed cache.
-- Schema v2 / analysis compatibility v1 / `freshness-v1` validate native root/path
+- The Phase 6 schema-v2 / analysis-compatibility-v1 / `freshness-v1` baseline validated native root/path
   identities, options, current inventory and eligible Rust/Python bytes. Pre/post
   build validation retries once on mutation. Corrupt/incompatible stores rebuild;
   automatic write failures warn on stderr while explicit indexing fails.
 - No source bodies or graph IDs are stored. Caches stay outside the analyzed root.
   Scan/stats/tree remain live; diff/impact remain committed-revision analyses.
-  `context --change` retains its snapshot gates. Phase 7 incremental updates remain
-  future work. Evidence: [Phase 6 report](reports/phase-6-implementation-report.md)
+  `context --change` retains its snapshot gates. Phase 7 extends this cache with
+  incremental updates. Evidence: [Phase 6 report](reports/phase-6-implementation-report.md)
   and [Phase 6 review-fix report](reports/phase-6-review-fix-report.md).
 
 - Phase 5 `context [PATH] --task TASK --budget BYTES` assembles deterministic
@@ -102,6 +116,11 @@ Evidence: [Phase 5 review-fix report](reports/phase-5-review-fix-report.md),
 
 ## Acceptance and verification
 
+- The maintainer directly authorized Phase 7 from `5e3ae18` while Phase 6 fresh
+  re-review and earlier dispositions remain pending. This is implementation
+  authorization, not independent acceptance. Phase 7 verification is recorded in
+  the [implementation report](reports/phase-7-implementation-report.md).
+
 - The maintainer directly authorized Phase 6 from `28e2f8a` despite pending earlier
   dispositions. This is implementation authorization, not independent acceptance.
 - Phase 6 canonical verifier passed: 77 unit / 59 integration tests, formatting,
@@ -181,12 +200,13 @@ Evidence: [Phase 5 review-fix report](reports/phase-5-review-fix-report.md),
 
 ## Known limitations
 
-Phase 6 still scans and reads eligible source bytes on each request. Freshness
+Phase 7 still scans and reads eligible source bytes on each request. Freshness
 reserves at most 256 MiB per pass; stores have additional size/record limits.
 If source freshness cannot be established, automatic current-state queries bypass
 the cache and return best-effort analysis with per-file `ReadFailed` status; explicit
-`index` fails and incomplete results are never persisted. No incremental indexing,
-cache GC or atomic filesystem snapshot exists. Windows/native-wide support is implemented but
+`index` fails and incomplete results are never persisted. Cache GC and atomic
+filesystem snapshots remain absent. Watch correctness derives from scans triggered by
+backend hints; there is no persisted event log or service/query server. Windows/native-wide support is implemented but
 not locally executed; non-UTF-8 store tests use injected native inventory records.
 
 Phase 5 packs complete files under a byte budget, not tokens/snippets. With
@@ -214,8 +234,8 @@ Imports remain unresolved. Unqualified method/nested calls remain unresolved
 unless their syntax exactly matches a unique qualified name. Call-site references
 and same-file matches are syntax heuristics, not binding/type/dispatch or compiler guarantees. IDs are index-local
 and may renumber across edits. Current-state graphs reconstruct from validated persisted analysis; revision commands
-build immutable Git-object models. No incremental indexing, concurrency, async,
-MCP, embeddings, model calls or policy behavior exists.
+build immutable Git-object models. Watch callback/channel concurrency is narrow; no
+async, MCP, embeddings, model calls or policy behavior exists.
 Relation budgets discard a failed file's extracted facts while retaining valid
 symbols and structural containment. Queries expose truncation on safety overflow.
 UTF-8 Rust/Python only; generated/vendor source skipped. Non-UTF-8 paths are
@@ -225,7 +245,8 @@ filesystem TOCTOU races remain; results are not atomic snapshots.
 
 ## Next step
 
-Fresh independent Phase 6 review of storage, freshness, safety and integration.
+Fresh independent Phase 7 review of incremental storage, freshness, races, watcher
+ownership and integration. Phase 6 fresh re-review remains pending.
 Phase 5 fresh re-review remains required. Phase 4 and Phase 3 fixes still require
 fresh independent re-review; Phase 1/2 final independent dispositions also remain
 pending. Local verification does not constitute independent acceptance.

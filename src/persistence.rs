@@ -1,13 +1,11 @@
-//! Current-state full-analysis reuse. No query or graph IDs cross this boundary.
-use crate::{
-    classify::FileRole, graph, index, model::*, relations::FileRelations, scan, source, store,
-};
+//! Current-state file-local analysis reconciliation. No query or graph IDs cross this boundary.
+use crate::{classify::FileRole, index, model::*, relations::FileRelations, scan, source, store};
 use std::path::{Path, PathBuf};
 
 // Bump when scanner/classifier, Rust/Python analysis, relation extraction, or
 // persisted enum semantics change. Keep this rule adjacent to the version gate.
 pub const INDEX_COMPAT_VERSION: i64 = 1;
-pub const FINGERPRINT_VERSION: &str = "freshness-v1";
+pub const FINGERPRINT_VERSION: &str = "freshness-v2";
 const MAX_FRESHNESS_BYTES: u64 = 256 * 1024 * 1024;
 pub struct AnalysisArtifact {
     pub index: RepositoryIndex,
@@ -44,19 +42,31 @@ fn field(hash: &mut blake3::Hasher, bytes: &[u8]) {
     hash.update(&(bytes.len() as u64).to_le_bytes());
     hash.update(bytes);
 }
+#[cfg(test)]
 fn fingerprint(scan: &RepositoryScan, max: u64) -> Result<[u8; 32], CacheError> {
-    fingerprint_with_limit(scan, max, MAX_FRESHNESS_BYTES)
+    Ok(file_inputs(scan, max, MAX_FRESHNESS_BYTES)?.0)
 }
+#[cfg(test)]
 fn fingerprint_with_limit(
     scan: &RepositoryScan,
     max: u64,
     limit: u64,
 ) -> Result<[u8; 32], CacheError> {
-    let mut hash = blake3::Hasher::new();
-    field(&mut hash, FINGERPRINT_VERSION.as_bytes());
-    hash.update(&max.to_le_bytes());
+    Ok(file_inputs(scan, max, limit)?.0)
+}
+fn file_inputs(
+    scan: &RepositoryScan,
+    max: u64,
+    limit: u64,
+) -> Result<([u8; 32], store::Inputs), CacheError> {
     let mut used = 0u64;
+    let mut inputs = store::Inputs::new();
     for file in &scan.files {
+        let mut hash = blake3::Hasher::new();
+        field(&mut hash, FINGERPRINT_VERSION.as_bytes());
+        field(&mut hash, store::PATH_CODEC.as_bytes());
+        hash.update(&INDEX_COMPAT_VERSION.to_le_bytes());
+        hash.update(&max.to_le_bytes());
         field(&mut hash, &store::native_bytes(&file.relative_path));
         field(
             &mut hash,
@@ -68,9 +78,7 @@ fn fingerprint_with_limit(
             && !matches!(file.role, FileRole::Generated | FileRole::Vendor)
             && file.size_bytes <= max
         {
-            // Charge the maximum possible read, including a growth probe.
-            let allowance = file.size_bytes.saturating_add(1);
-            used = used.saturating_add(allowance);
+            used = used.saturating_add(file.size_bytes.saturating_add(1));
             if used > limit {
                 return Err(CacheError::FreshnessLimit);
             }
@@ -78,8 +86,27 @@ fn fingerprint_with_limit(
                 .map_err(|_| CacheError::Freshness)?;
             field(&mut hash, &bytes);
         }
+        inputs.insert(
+            file.relative_path.clone(),
+            store::FileInput {
+                size: file.size_bytes,
+                stamp: *hash.finalize().as_bytes(),
+            },
+        );
     }
-    Ok(*hash.finalize().as_bytes())
+    Ok((generation(&inputs, max), inputs))
+}
+pub(crate) fn generation(inputs: &store::Inputs, max: u64) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    field(&mut hash, FINGERPRINT_VERSION.as_bytes());
+    field(&mut hash, store::PATH_CODEC.as_bytes());
+    hash.update(&INDEX_COMPAT_VERSION.to_le_bytes());
+    hash.update(&max.to_le_bytes());
+    for (path, input) in inputs {
+        field(&mut hash, &store::native_bytes(path));
+        field(&mut hash, &input.stamp);
+    }
+    *hash.finalize().as_bytes()
 }
 fn location(root: &Path, max: u64) -> Result<PathBuf, CacheError> {
     let base = match std::env::var_os("CONTEXT_ENGINE_CACHE_DIR") {
@@ -137,63 +164,103 @@ fn location(root: &Path, max: u64) -> Result<PathBuf, CacheError> {
     hash.update(&max.to_le_bytes());
     Ok(base.join(format!("{}.sqlite3", hash.finalize().to_hex())))
 }
-pub fn load_or_build(options: &IndexOptions, force: bool) -> Result<AnalysisArtifact, CacheError> {
-    load_with(options, force, None, |scan| {
-        let (index, relation_files) =
-            index::analyze_scan(scan, options.max_parse_file_bytes, true)?;
-        Ok(AnalysisArtifact {
-            index,
-            relation_files,
-        })
-    })
+pub struct Reconciled {
+    pub artifact: AnalysisArtifact,
+    pub warnings: Vec<String>,
+    pub committed: bool,
 }
-fn load_with<F>(
-    options: &IndexOptions,
-    force: bool,
-    test_path: Option<&Path>,
-    build: F,
-) -> Result<AnalysisArtifact, CacheError>
-where
-    F: FnMut(RepositoryScan) -> Result<AnalysisArtifact, CacheError>,
-{
-    load_with_fingerprint(options, force, test_path, build, fingerprint)
+pub fn reconcile(options: &IndexOptions, force: bool) -> Result<Reconciled, CacheError> {
+    reconcile_with(
+        options,
+        force,
+        None,
+        |scan| {
+            let (index, relation_files) =
+                index::analyze_scan(scan, options.max_parse_file_bytes, true)?;
+            Ok(AnalysisArtifact {
+                index,
+                relation_files,
+            })
+        },
+        |scan, max| file_inputs(scan, max, MAX_FRESHNESS_BYTES),
+    )
 }
-fn warn_unverified() {
-    eprintln!(
-        "ctx: warning: source freshness could not be established; returning uncached best-effort analysis"
-    );
-}
-fn load_with_fingerprint<F, H>(
+const UNVERIFIED: &str =
+    "source freshness could not be established; returning uncached best-effort analysis";
+fn reconcile_with<F, H>(
     options: &IndexOptions,
     force: bool,
     test_path: Option<&Path>,
     mut build: F,
-    mut fingerprint_fn: H,
-) -> Result<AnalysisArtifact, CacheError>
+    mut inputs_fn: H,
+) -> Result<Reconciled, CacheError>
 where
     F: FnMut(RepositoryScan) -> Result<AnalysisArtifact, CacheError>,
-    H: FnMut(&RepositoryScan, u64) -> Result<[u8; 32], CacheError>,
+    H: FnMut(&RepositoryScan, u64) -> Result<([u8; 32], store::Inputs), CacheError>,
 {
     for attempt in 0..2 {
-        let before = scan_now(options)?;
-        let stamp = match fingerprint_fn(&before, options.max_parse_file_bytes) {
-            Ok(stamp) => stamp,
+        let mut before = scan_now(options)?;
+        let (stamp, inputs) = match inputs_fn(&before, options.max_parse_file_bytes) {
+            Ok(inputs) => inputs,
             Err(CacheError::Freshness) if !force => {
-                warn_unverified();
-                return build(before);
+                return Ok(Reconciled {
+                    artifact: build(before)?,
+                    warnings: vec![UNVERIFIED.into()],
+                    committed: false,
+                });
             }
             Err(error) => return Err(error),
         };
         let path = test_path
             .map(|p| Ok(p.to_path_buf()))
             .unwrap_or_else(|| location(&before.root, options.max_parse_file_bytes));
-        if !force
-            && let Ok(path) = &path
-            && let Ok(artifact) = store::load(path, &before, options.max_parse_file_bytes, &stamp)
-        {
-            return Ok(artifact);
-        }
-        let mut artifact = build(before)?;
+        let snapshot = if force {
+            None
+        } else {
+            path.as_ref().ok().and_then(|p| {
+                store::load_snapshot(p, &before.root, options.max_parse_file_bytes).ok()
+            })
+        };
+        let expected = snapshot.as_ref().map(|s| s.generation);
+        let mut artifact = if let Some(mut snapshot) = snapshot {
+            if snapshot.generation == stamp && snapshot.inputs == inputs {
+                live_metadata(&mut snapshot.artifact, before);
+                return Ok(Reconciled {
+                    artifact: snapshot.artifact,
+                    warnings: vec![],
+                    committed: true,
+                });
+            }
+            let unchanged: std::collections::BTreeSet<_> = inputs
+                .iter()
+                .filter(|(p, i)| snapshot.inputs.get(*p) == Some(*i))
+                .map(|(p, _)| p.clone())
+                .collect();
+            before
+                .files
+                .retain(|f| !unchanged.contains(&f.relative_path));
+            let mut changed = build(before)?;
+            let old = &mut snapshot.artifact;
+            old.index
+                .files
+                .retain(|f| unchanged.contains(&f.relative_path));
+            old.index
+                .symbols
+                .retain(|f| unchanged.contains(&f.relative_path));
+            old.index
+                .diagnostics
+                .retain(|f| unchanged.contains(&f.relative_path));
+            old.relation_files
+                .retain(|f| unchanged.contains(&f.relative_path));
+            changed.index.files.append(&mut old.index.files);
+            changed.index.symbols.append(&mut old.index.symbols);
+            changed.index.diagnostics.append(&mut old.index.diagnostics);
+            changed.relation_files.append(&mut old.relation_files);
+            changed
+        } else {
+            build(before)?
+        };
+        index::validate_analysis(&artifact.index, &artifact.relation_files)?;
         if artifact
             .index
             .files
@@ -203,55 +270,117 @@ where
             if force {
                 return Err(CacheError::Freshness);
             }
-            warn_unverified();
-            return Ok(artifact);
+            return Ok(Reconciled {
+                artifact,
+                warnings: vec![UNVERIFIED.into()],
+                committed: false,
+            });
         }
         let after = scan_now(options)?;
-        let post = match fingerprint_fn(&after, options.max_parse_file_bytes) {
-            Ok(stamp) => stamp,
+        let (post, post_inputs) = match inputs_fn(&after, options.max_parse_file_bytes) {
+            Ok(inputs) => inputs,
             Err(CacheError::Freshness) if !force => {
-                warn_unverified();
-                return Ok(artifact);
+                // The failed post-pass may concern a retained file. Re-read live
+                // evidence rather than returning now-unverified cached units.
+                return Ok(Reconciled {
+                    artifact: build(after)?,
+                    warnings: vec![UNVERIFIED.into()],
+                    committed: false,
+                });
             }
             Err(error) => return Err(error),
         };
-        if post != stamp || after.root != artifact.index.root {
+        if post != stamp || post_inputs != inputs || after.root != artifact.index.root {
             if attempt == 0 {
                 continue;
             }
             return Err(CacheError::Changed);
         }
-        artifact.index.git = after.git;
-        artifact.index.scan_warnings = after.warnings;
-        index::qualify_paths(&mut artifact.index);
-        artifact.index.sort();
+        live_metadata(&mut artifact, after);
         let saved = path.and_then(|path| {
-            Ok(store::save(
-                &path,
-                &artifact,
-                options.max_parse_file_bytes,
-                &stamp,
-            )?)
-        });
-        if let Err(error) = saved {
-            if force {
-                return Err(error);
+            if let Some(expected) = expected {
+                store::patch(
+                    &path,
+                    &expected,
+                    &artifact,
+                    options.max_parse_file_bytes,
+                    &stamp,
+                    &inputs,
+                )?
+            } else {
+                store::save_snapshot(
+                    &path,
+                    &artifact,
+                    options.max_parse_file_bytes,
+                    &stamp,
+                    &inputs,
+                )?
             }
-            eprintln!(
-                "ctx: warning: {}",
-                crate::output::escape_controls(&error.to_string())
-            );
+            Ok(())
+        });
+        match saved {
+            Err(CacheError::Store(store::StoreError::Conflict)) if attempt == 0 => continue,
+            Err(error @ CacheError::Store(store::StoreError::Conflict)) => return Err(error),
+            Err(error) if force => return Err(error),
+            Err(error) => {
+                return Ok(Reconciled {
+                    artifact,
+                    warnings: vec![error.to_string()],
+                    committed: false,
+                });
+            }
+            Ok(()) => {
+                return Ok(Reconciled {
+                    artifact,
+                    warnings: vec![],
+                    committed: true,
+                });
+            }
         }
-        return Ok(artifact);
     }
     unreachable!()
 }
-pub fn graph(options: &IndexOptions) -> Result<graph::RepositoryGraph, CacheError> {
-    let artifact = load_or_build(options, false)?;
-    Ok(graph::from_analysis(
-        artifact.index,
-        artifact.relation_files,
-    )?)
+fn live_metadata(artifact: &mut AnalysisArtifact, scan: RepositoryScan) {
+    artifact.index.git = scan.git;
+    artifact.index.scan_warnings = scan.warnings;
+    index::qualify_paths(&mut artifact.index);
+    artifact.index.sort();
+    artifact
+        .relation_files
+        .sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+}
+#[cfg(test)]
+fn load_with<F>(
+    options: &IndexOptions,
+    force: bool,
+    path: Option<&Path>,
+    build: F,
+) -> Result<AnalysisArtifact, CacheError>
+where
+    F: FnMut(RepositoryScan) -> Result<AnalysisArtifact, CacheError>,
+{
+    Ok(reconcile_with(options, force, path, build, |s, m| {
+        file_inputs(s, m, MAX_FRESHNESS_BYTES)
+    })?
+    .artifact)
+}
+#[cfg(test)]
+fn load_with_fingerprint<F, H>(
+    options: &IndexOptions,
+    force: bool,
+    path: Option<&Path>,
+    build: F,
+    mut fingerprint: H,
+) -> Result<AnalysisArtifact, CacheError>
+where
+    F: FnMut(RepositoryScan) -> Result<AnalysisArtifact, CacheError>,
+    H: FnMut(&RepositoryScan, u64) -> Result<[u8; 32], CacheError>,
+{
+    Ok(reconcile_with(options, force, path, build, |s, m| {
+        let stamp = fingerprint(s, m)?;
+        Ok((stamp, file_inputs(s, m, MAX_FRESHNESS_BYTES)?.1))
+    })?
+    .artifact)
 }
 
 #[cfg(test)]
@@ -511,5 +640,291 @@ mod tests {
                         && s.name == "native_symbol"
                 )
         );
+    }
+    fn checked_build(
+        scan: RepositoryScan,
+        parsed: &mut Vec<PathBuf>,
+    ) -> Result<AnalysisArtifact, CacheError> {
+        let (index, relation_files) = index::analyze_loaded(scan, 1024, |root, file, max| {
+            parsed.push(file.relative_path.clone());
+            source::load(root, &file.relative_path, max)
+        })?;
+        Ok(AnalysisArtifact {
+            index,
+            relation_files,
+        })
+    }
+    #[test]
+    fn file_delta_parser_work_and_full_graph_equivalence() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let path = cache.path().join("cache.sqlite3");
+        let opts = options(root.path());
+        std::fs::write(
+            root.path().join("a.py"),
+            "import os\ndef old():\n    old()\n",
+        )
+        .unwrap();
+        std::fs::write(root.path().join("b.rs"), "fn retained() {}\n").unwrap();
+        load_with(&opts, false, Some(&path), build).unwrap();
+        // Detect any attempt to rewrite an unrelated ownership group.
+        rusqlite::Connection::open(&path).unwrap().execute_batch(
+            "CREATE TRIGGER untouched BEFORE DELETE ON files WHEN OLD.path=x'622e7273' BEGIN SELECT RAISE(ABORT,'rewrote retained file'); END;"
+        ).unwrap();
+        for step in 0..8 {
+            let expected: &[&str] = match step {
+                0 => &[],
+                1 => {
+                    std::fs::write(root.path().join("a.py"), "def replacement(): pass\n").unwrap();
+                    &["a.py"]
+                }
+                2 => {
+                    std::fs::write(root.path().join("c.py"), "def added(): pass\n").unwrap();
+                    &["c.py"]
+                }
+                3 => {
+                    std::fs::remove_file(root.path().join("a.py")).unwrap();
+                    &[]
+                }
+                4 => {
+                    std::fs::rename(root.path().join("c.py"), root.path().join("d.py")).unwrap();
+                    &["d.py"]
+                }
+                5 => {
+                    std::fs::create_dir(root.path().join("generated")).unwrap();
+                    std::fs::write(root.path().join("generated/a.py"), "def skipped(): pass\n")
+                        .unwrap();
+                    std::fs::write(root.path().join("README.md"), "unsupported").unwrap();
+                    std::fs::write(root.path().join("large.py"), vec![b' '; 1025]).unwrap();
+                    &[]
+                }
+                6 => {
+                    std::fs::write(root.path().join("large.py"), "def now_small(): pass\n")
+                        .unwrap();
+                    &["large.py"]
+                }
+                _ => {
+                    std::fs::write(root.path().join("large.py"), vec![b' '; 1025]).unwrap();
+                    &[]
+                }
+            };
+            let mut parsed = vec![];
+            let result = reconcile_with(
+                &opts,
+                false,
+                Some(&path),
+                |s| checked_build(s, &mut parsed),
+                |s, m| file_inputs(s, m, MAX_FRESHNESS_BYTES),
+            )
+            .unwrap();
+            assert!(result.committed, "{:?}", result.warnings);
+            assert_eq!(
+                parsed,
+                expected.iter().map(PathBuf::from).collect::<Vec<_>>(),
+                "step {step}"
+            );
+            let full = build(scan_now(&opts).unwrap()).unwrap();
+            assert_eq!(
+                crate::output::index_json("symbols", &result.artifact.index, None).unwrap(),
+                crate::output::index_json("symbols", &full.index, None).unwrap()
+            );
+            let incremental_graph =
+                crate::graph::from_analysis(result.artifact.index, result.artifact.relation_files)
+                    .unwrap();
+            let full_graph = crate::graph::from_analysis(full.index, full.relation_files).unwrap();
+            assert_eq!(
+                crate::output::graph_json("graph", &incremental_graph, None, None).unwrap(),
+                crate::output::graph_json("graph", &full_graph, None, None).unwrap(),
+                "step {step}"
+            );
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let stale: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM symbols WHERE instr(CAST(payload AS TEXT),'old')>0",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(stale, if step == 0 { 1 } else { 0 });
+            if step > 0 {
+                let candidates: i64 = conn
+                    .query_row("SELECT count(*) FROM candidates", [], |r| r.get(0))
+                    .unwrap();
+                assert_eq!(candidates, 0);
+            }
+        }
+    }
+    #[test]
+    fn incremental_mutation_checks_changed_and_previously_unchanged_files() {
+        for mutate in ["a.py", "b.py"] {
+            let root = tempfile::tempdir().unwrap();
+            let cache = tempfile::tempdir().unwrap();
+            let path = cache.path().join("cache.sqlite3");
+            let opts = options(root.path());
+            for file in ["a.py", "b.py"] {
+                std::fs::write(root.path().join(file), "def old(): pass\n").unwrap();
+            }
+            load_with(&opts, false, Some(&path), build).unwrap();
+            let prior = std::fs::read(&path).unwrap();
+            std::fs::write(root.path().join("a.py"), "def changed(): pass\n").unwrap();
+            let mut attempts = 0;
+            let result = load_with(&opts, false, Some(&path), |s| {
+                let a = build(s)?;
+                attempts += 1;
+                std::fs::write(
+                    root.path().join(mutate),
+                    format!("def mutation{attempts}(): pass\n"),
+                )
+                .unwrap();
+                Ok(a)
+            });
+            assert!(matches!(result, Err(CacheError::Changed)));
+            assert_eq!(attempts, 2);
+            assert_eq!(prior, std::fs::read(&path).unwrap());
+            let mut attempts = 0;
+            let stable = load_with(&opts, false, Some(&path), |s| {
+                let a = build(s)?;
+                attempts += 1;
+                if attempts == 1 {
+                    std::fs::write(root.path().join(mutate), "def stable(): pass\n").unwrap();
+                }
+                Ok(a)
+            })
+            .unwrap();
+            assert_eq!(attempts, 2);
+            assert!(stable.index.symbols.iter().any(|s| s.name == "stable"));
+        }
+    }
+    #[test]
+    fn conflict_reloads_and_automatic_patch_failure_returns_fresh_result() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let path = cache.path().join("cache.sqlite3");
+        let opts = options(root.path());
+        std::fs::write(root.path().join("a.py"), "def old(): pass\n").unwrap();
+        load_with(&opts, false, Some(&path), build).unwrap();
+        let old = store::load_snapshot(&path, &opts.root.canonicalize().unwrap(), 1024).unwrap();
+        std::fs::write(root.path().join("a.py"), "def newer(): pass\n").unwrap();
+        let mut calls = 0;
+        let result = load_with(&opts, false, Some(&path), |s| {
+            calls += 1;
+            assert_eq!(calls, 1, "retry should warm-load the other writer's result");
+            let a = build(s)?;
+            let (stamp, inputs) = file_inputs(&scan_now(&opts)?, 1024, MAX_FRESHNESS_BYTES)?;
+            store::patch(&path, &old.generation, &a, 1024, &stamp, &inputs)?;
+            Ok(a)
+        })
+        .unwrap();
+        assert!(result.index.symbols.iter().any(|s| s.name == "newer"));
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TRIGGER fail_patch BEFORE INSERT ON symbols BEGIN SELECT RAISE(ABORT,'injected failure'); END;").unwrap();
+        drop(conn);
+        let prior = std::fs::read(&path).unwrap();
+        std::fs::write(root.path().join("a.py"), "def freshest(): pass\n").unwrap();
+        let result = reconcile_with(&opts, false, Some(&path), build, |s, m| {
+            file_inputs(s, m, MAX_FRESHNESS_BYTES)
+        })
+        .unwrap();
+        assert!(!result.committed);
+        assert!(!result.warnings.is_empty());
+        assert!(
+            result
+                .artifact
+                .index
+                .symbols
+                .iter()
+                .any(|s| s.name == "freshest")
+        );
+        assert_eq!(prior, std::fs::read(&path).unwrap());
+    }
+    #[test]
+    fn unknown_freshness_never_reuses_or_replaces_a_trusted_stale_base() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let path = cache.path().join("cache.sqlite3");
+        let opts = options(root.path());
+        std::fs::write(root.path().join("a.py"), "def old(): pass\n").unwrap();
+        load_with(&opts, false, Some(&path), build).unwrap();
+        let prior = std::fs::read(&path).unwrap();
+        std::fs::write(root.path().join("a.py"), "def live(): pass\n").unwrap();
+        let mut calls = 0;
+        let result = reconcile_with(
+            &opts,
+            false,
+            Some(&path),
+            |s| {
+                calls += 1;
+                build(s)
+            },
+            |_, _| Err(CacheError::Freshness),
+        )
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert!(!result.committed);
+        assert!(
+            result
+                .artifact
+                .index
+                .symbols
+                .iter()
+                .any(|s| s.name == "live")
+        );
+        assert_eq!(prior, std::fs::read(&path).unwrap());
+    }
+
+    #[test]
+    fn post_freshness_failure_reloads_live_instead_of_retaining_cached_units() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let path = cache.path().join("cache.sqlite3");
+        let opts = options(root.path());
+        for file in ["a.py", "b.py"] {
+            std::fs::write(root.path().join(file), "def cached(): pass\n").unwrap();
+        }
+        load_with(&opts, false, Some(&path), build).unwrap();
+        let prior = std::fs::read(&path).unwrap();
+        std::fs::write(root.path().join("a.py"), "def changed(): pass\n").unwrap();
+        let (mut builds, mut passes) = (0, 0);
+        let result = reconcile_with(
+            &opts,
+            false,
+            Some(&path),
+            |scan| {
+                builds += 1;
+                let (index, relation_files) =
+                    index::analyze_loaded(scan, 1024, |root, file, max| {
+                        if builds == 2 && file.relative_path == Path::new("b.py") {
+                            return Err(AnalysisStatus::ReadFailed);
+                        }
+                        source::load(root, &file.relative_path, max)
+                    })?;
+                Ok(AnalysisArtifact {
+                    index,
+                    relation_files,
+                })
+            },
+            |scan, max| {
+                passes += 1;
+                if passes == 2 {
+                    return Err(CacheError::Freshness);
+                }
+                file_inputs(scan, max, MAX_FRESHNESS_BYTES)
+            },
+        )
+        .unwrap();
+        assert_eq!(builds, 2);
+        assert!(!result.committed);
+        assert!(result.artifact.index.files.iter().any(
+            |f| f.relative_path == Path::new("b.py") && f.status == AnalysisStatus::ReadFailed
+        ));
+        assert!(
+            !result
+                .artifact
+                .index
+                .symbols
+                .iter()
+                .any(|s| s.name == "cached")
+        );
+        assert_eq!(prior, std::fs::read(&path).unwrap());
     }
 }

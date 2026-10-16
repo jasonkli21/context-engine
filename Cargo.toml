@@ -28,6 +28,7 @@ blake3 = "1"
 dirs = "6"
 rustix = { version = "1", features = ["fs"] }
 tempfile = "3"
+notify = "8"
 
 [dev-dependencies]
 assert_cmd = "2"
