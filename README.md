@@ -2,7 +2,7 @@
 
 > **Working name.** A local-first codebase / context intelligence engine written in Rust.
 
-Context Engine is an early-stage open-source project for turning software repositories into structured, queryable evidence: files, symbols, relationships, changes, history, and eventually task-specific context for developers and coding agents.
+Context Engine is an early-stage open-source project for turning software repositories into structured, queryable evidence: files, symbols, relationships, changes, history, and task-specific context for developers and coding agents.
 
 The core question is:
 
@@ -12,11 +12,11 @@ The project is intentionally **descriptive rather than normative**. It aims to m
 
 ## Status
 
-**Pre-alpha / Phase 4 implemented; independent review pending.**
+**Pre-alpha / Phase 5 implemented; independent review pending.**
 The synchronous CLI scans repositories, indexes Rust/Python symbols, and builds a
 fresh in-memory graph of lexical containment, imports and call-site references.
-The maintainer authorized Phase 4 from the Phase 3 review-fix baseline; final
-independent Phase 1/2/3 dispositions remain pending.
+The maintainer authorized Phase 5 from the Phase 4 review-fix baseline; final
+independent Phase 1/2/3/4 dispositions remain pending.
 Phase 0 was accepted on 2026-10-14. Persistence, async, MCP, embeddings and model
 calls remain future work.
 
@@ -48,6 +48,9 @@ cargo build --release
 ./target/release/ctx hotspots . --limit 10
 ./target/release/ctx diff HEAD~1..HEAD . --format json
 ./target/release/ctx impact HEAD~1..HEAD . --depth 2
+./target/release/ctx context . --task "context ranking" --budget 24000
+./target/release/ctx context . --task "context ranking" --budget 24000 --format json
+./target/release/ctx context . --task "changed methods" --budget 24000 --change HEAD~1..HEAD
 ```
 
 All commands default to the current directory and accept `--format human|json`.
@@ -57,6 +60,48 @@ read immutable Git objects. `scan` shows an overview;
 `stats` adds per-language byte and line totals; `tree` lists alphabetically ordered
 relative paths, with `/` suffixes for directories. Tree does not read file contents
 or probe Git. Help and version: `ctx --help`, `ctx scan --help`, `ctx --version`.
+
+### Task context bundles
+
+`context [PATH] --task TASK --budget BYTES` selects complete safely loaded UTF-8
+files from the current filesystem. The budget is **raw UTF-8 content bytes**, not
+tokens; selected contents total at most the budget. Metadata/framing is outside
+that budget and subject to the separate 64 MiB output safety bound. A file that
+cannot fit is skipped, and smaller candidates are still considered.
+
+`file-ranker-v1` combines capped integer path, symbol, depth-2 graph, supporting
+file-role, optional change, and secondary centrality components. Each selected
+file reports its score, stable reasons, matched symbols, graph/change distances,
+rank, byte cost, and full content. A reached test is a **related test candidate**,
+not coverage. Docs/config/schema use direct lexical evidence. Graph resolution
+remains same-file syntax evidence; the repository containment hub is excluded.
+Unrelated hotspots are excluded unless no lexical/change seeds exist, when an
+explicit centrality fallback ranks at most 20 files. Ordering is deterministic:
+total score, symbol, path, change, graph, centrality descending; native path ascending.
+
+Tasks accept 1–4096 UTF-8 bytes. Unicode lowercase normalization keeps canonical
+terms and separator components, omits one-character terms except a one-character
+task, and reports truncation beyond 64 unique terms. Budgets accept 1 byte through 16 MiB.
+At most 200 files, 8 matched symbols per file, and 50 skip details are reported;
+omitted counts, root/traversal truncation, analysis gaps, and load failures remain
+explicit. Content reads are capped at the remaining budget (and 16 MiB per file).
+An over-budget file is not fully decoded, so its budget skip takes precedence over
+possible UTF-8 errors. Human source lines retain tabs and line breaks, escape
+other controls, and carry a visible `|` prefix. JSON retains raw decoded content.
+
+`--change BASE..HEAD` adds committed change evidence only with available Git
+metadata, a known clean worktree, and a resolved range head matching current
+HEAD. Hidden index flags, unmerged entries and scoped submodules are rejected;
+the gate is rechecked after content loading. Files map by head path; symbols
+map only by unique path/kind/qualified name, never revision-local numeric IDs.
+Deleted-only entities supply no fabricated content. Invalid/incompatible requested
+change evidence is a command error. Without `--change`, Git is optional and dirty
+filesystem content is allowed. This is not an atomic filesystem snapshot.
+
+The fixture-authored six-scenario recall benchmark compares the production ranker
+and packer against canonical path order and path-only lexical matching. See the
+[Phase 5 report](docs/reports/phase-5-implementation-report.md) for exact results,
+weights, and benchmark limitations.
 
 ### Committed structural changes
 
@@ -389,13 +434,14 @@ Query commands add `query`, `match_mode`, root ID list `roots`, `depth`,
 `roots_truncated`, `truncated`, and `results` instead of top-level entity/relation arrays. Each result
 contains `root_id`, its entity/relationship records and its own `truncated` flag.
 Output IDs reference the enclosing graph, not positions in a query subset.
-Source bodies are never serialized; optional Git HEAD is repository metadata,
+Graph/query commands do not serialize source bodies; `context` includes selected
+full-file content. Optional Git HEAD is repository metadata,
 not an identity for exact dirty working-tree content.
 
 ## Future direction
 
-Later phases may add richer repository queries, structural Git changes,
-persistence and task-context compilation. These capabilities are not implemented.
+Later phases may add persistence, incremental updates, history/co-change signals,
+service adapters and cross-repository context. These capabilities are not implemented.
 
 ## Why Rust?
 

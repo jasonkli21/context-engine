@@ -418,6 +418,38 @@ fn scope_relative(path: &Path, prefix: &Path) -> Option<PathBuf> {
     (!relative.as_os_str().is_empty()).then(|| relative.to_path_buf())
 }
 
+/// Context ranks filesystem bytes, so hidden index entries and gitlinks cannot
+/// establish the clean snapshot required for committed-change ranking. This is
+/// metadata-only and bounded; it never descends into a submodule or runs filters.
+pub fn validate_context_index(scope: &Path) -> Result<(), Error> {
+    let bytes = run(
+        scope,
+        &["ls-files", "--cached", "--stage", "-v", "-z"],
+        LIMITS.tree_bytes,
+        "context index compatibility",
+    )?;
+    for row in bytes.split(|&b| b == 0).filter(|row| !row.is_empty()) {
+        let header = row
+            .split(|&b| b == b'\t')
+            .next()
+            .ok_or(Error::Git("context index metadata"))?;
+        // Lowercase status tags hide assume-unchanged entries; S hides sparse /
+        // skip-worktree entries. Only ordinary tracked H entries are accepted.
+        let fields: Vec<_> = header.split(|&b| b == b' ').collect();
+        if fields.len() != 4 || fields[0] != b"H" || fields[3] != b"0" {
+            return Err(Error::Git(
+                "--change requires an index without hidden or unmerged entries",
+            ));
+        }
+        if fields[1] == b"160000" {
+            return Err(Error::Git(
+                "--change cannot establish clean submodule content",
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

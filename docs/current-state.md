@@ -1,12 +1,27 @@
 # Current state
 
-**Last updated:** 2026-10-15
+**Last updated:** 2026-10-16
 
-**Active phase:** Phase 4 — Git and Structural Change Intelligence
+**Active phase:** Phase 5 — Task Context Ranking
 
-**Overall status:** Phase 4 review findings fixed and locally verified; fresh independent re-review pending
+**Overall status:** Phase 5 implemented and locally verified; fresh independent review required
 
 ## Delivered
+
+- Phase 5 `context [PATH] --task TASK --budget BYTES` assembles deterministic
+  full-file UTF-8 bundles with explicit `file-ranker-v1` integer scores/reasons,
+  matched symbols, exact content-byte accounting and skip-and-continue packing.
+- Path/symbol relevance, existing depth-2 traversal, supporting test/doc/config/
+  schema evidence and capped secondary centrality reuse the current graph.
+  Explicit centrality fallback, root/traversal/explanation/selection omissions,
+  analysis gaps and content failures are reported in human/schema-v1 JSON.
+- Optional `--change BASE..HEAD` requires known clean current HEAD matching the
+  resolved range, rejects hidden index entries/scoped gitlinks, maps structural
+  descriptors rather than numeric IDs, and rechecks compatibility after loading.
+- Six fixture-authored scenarios: expected-file macro recall 1.0 for production
+  ranking, 0.0 for path order, 0.333333 for path-only matching under identical
+  eligibility/loading/byte budgets. These synthetic fixtures do not establish
+  cross-file retrieval quality or general natural-language understanding.
 
 - Phase 4 `diff BASE..HEAD` and `impact BASE..HEAD` read bounded committed Git
   snapshots, resolve immutable commits, honor nested scopes, and ignore dirty
@@ -50,7 +65,8 @@
   text, record and output limits; explicit query root omission accounting;
   relation-file accounting alongside every file's Phase 1 analysis status.
 
-Evidence: [Phase 4 report](reports/phase-4-implementation-report.md),
+Evidence: [Phase 5 report](reports/phase-5-implementation-report.md),
+[Phase 4 report](reports/phase-4-implementation-report.md),
 [Phase 3 report](reports/phase-3-implementation-report.md),
 [Phase 3 review-fix report](reports/phase-3-review-fix-report.md),
 [independent Phase 3 review](reviews/phase-3-independent-review.md),
@@ -63,6 +79,15 @@ Evidence: [Phase 4 report](reports/phase-4-implementation-report.md),
 [Phase 2 review-fix report](reports/phase-2-review-fix-report.md).
 
 ## Acceptance and verification
+
+- The maintainer explicitly authorized Phase 5 from `4579d5b` despite pending
+  Phase 4 fresh re-review and earlier final dispositions; this is not acceptance.
+- Phase 5 canonical verifier passed: 65 unit / 56 integration tests, including
+  all previous suites. All-target check, release build, diff whitespace check
+  and eleven release smoke invocations passed locally on macOS using the existing
+  isolated toolchain. Both formats were checked on real Rust/Python repositories
+  and a clean Git fixture; dirty/mismatched snapshots failed with empty stdout.
+  Fresh independent Phase 5 review remains required.
 
 - The maintainer directly authorized Phase 4 from `865f5a4` while Phase 3 fresh
   re-review and Phase 1/2 final dispositions remain pending. Authorization does
@@ -111,6 +136,15 @@ Evidence: [Phase 4 report](reports/phase-4-implementation-report.md),
 
 ## Known limitations
 
+Phase 5 packs complete files under a byte budget, not tokens/snippets. With repository containment excluded,
+resolved graph edges stay within files, so graph boosts currently support seed
+owners rather than independently retrieving cross-file source/tests. Docs use
+path/role evidence; tests are related candidates, not coverage. No atomic filesystem
+snapshot is promised. `--change` uses conservative Git cleanliness metadata and
+rejects hidden index flags/submodules within scope. Content reads stop at remaining
+bytes; over-budget files may be skipped before UTF-8 validation. Conservative
+64 MiB output preflight can reject a large otherwise-renderable bundle.
+
 Phase 4 is committed two-dot comparison only, with no working-tree/triple-dot,
 compiler-grade impact, symbol-rename lineage or cross-file binding. Diff analyzes
 changed sides only; impact inventories tracked scoped trees regardless of checkout
@@ -137,7 +171,7 @@ filesystem TOCTOU races remain; results are not atomic snapshots.
 
 ## Next step
 
-Fresh independent Phase 4 re-review and final disposition. Phase 3 fixes still
-require fresh independent re-review; Phase 1/2 final independent
-dispositions also remain pending. Local verification does not constitute
-independent acceptance of any phase.
+Fresh independent Phase 5 review, including challenge of the plan, benchmark,
+graph usefulness and snapshot/output bounds. Phase 4 and Phase 3 fixes still
+require fresh independent re-review; Phase 1/2 final independent dispositions also
+remain pending. Local verification does not constitute independent acceptance.

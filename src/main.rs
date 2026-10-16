@@ -1,6 +1,7 @@
 mod change;
 mod classify;
 mod cli;
+mod context;
 mod git;
 mod graph;
 mod index;
@@ -26,6 +27,7 @@ use std::{
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let rendered = match cli.command {
+        Command::Context(args) => context_command(args)?,
         Command::Diff(args) => change_command("diff", args, None)?,
         Command::Impact(args) => change_command("impact", args.change, Some(args.depth))?,
         Command::Search(args) => search_command(args)?,
@@ -228,5 +230,27 @@ fn change_command(
     Ok(match args.analysis.format {
         Format::Human => output::change::human(command, &set)?,
         Format::Json => output::change::json(command, &set)?,
+    })
+}
+
+fn context_command(args: cli::ContextArgs) -> Result<String, Box<dyn std::error::Error>> {
+    let task = context::Task::parse(&args.task)?;
+    context::validate_budget(args.budget)?;
+    let mut opts = options(&args.analysis);
+    opts.probe_git = true;
+    let g = graph::build(&opts)?;
+    let changes = args
+        .change
+        .as_deref()
+        .map(|range| context::compatible_change(&g, range, args.analysis.max_parse_file_size))
+        .transpose()?;
+    let ranking = context::rank(&g, &task, changes.as_ref());
+    let bundle = context::select(&g, ranking, args.budget);
+    if let Some(changes) = &changes {
+        context::recheck_snapshot(&g, &changes.head)?;
+    }
+    Ok(match args.analysis.format {
+        Format::Human => output::context::human(&g, &task, &bundle, changes.as_ref())?,
+        Format::Json => output::context::json(&g, &task, &bundle, changes.as_ref())?,
     })
 }

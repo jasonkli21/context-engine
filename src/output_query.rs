@@ -27,7 +27,7 @@ struct CoverageDto {
 }
 
 #[derive(Serialize)]
-struct QueryContext {
+pub(super) struct QueryContext {
     root: String,
     id_semantics: &'static str,
     coverage: CoverageDto,
@@ -51,7 +51,10 @@ fn paths_may_be_lossy(index: &RepositoryIndex) -> bool {
         })
 }
 
-fn query_context(index: &RepositoryIndex, graph: Option<&RepositoryGraph>) -> QueryContext {
+pub(super) fn query_context(
+    index: &RepositoryIndex,
+    graph: Option<&RepositoryGraph>,
+) -> QueryContext {
     let file_analysis = analysis_summary(index);
     let graph_analysis = graph.map(graph_summary);
     let paths_may_be_lossy = paths_may_be_lossy(index);
@@ -84,7 +87,7 @@ fn query_context(index: &RepositoryIndex, graph: Option<&RepositoryGraph>) -> Qu
     }
 }
 
-fn human_context(index: &RepositoryIndex, graph: Option<&RepositoryGraph>) -> String {
+pub(super) fn human_context(index: &RepositoryIndex, graph: Option<&RepositoryGraph>) -> String {
     let context = query_context(index, graph);
     let coverage = context.coverage;
     let summary = coverage.file_analysis;

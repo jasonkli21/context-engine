@@ -17,6 +17,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Assemble explainable full-file context under a UTF-8 content-byte budget.
+    Context(ContextArgs),
     /// Compare structure in two committed revisions.
     Diff(ChangeArgs),
     /// Traverse prior/current structural neighbors of committed changes.
@@ -173,4 +175,18 @@ pub struct ImpactArgs {
     pub change: ChangeArgs,
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(0..=crate::graph::MAX_DEPTH as i64))]
     pub depth: u8,
+}
+
+#[derive(Debug, Args)]
+pub struct ContextArgs {
+    #[arg(long)]
+    pub task: String,
+    /// Maximum raw UTF-8 content bytes (1 through 16777216).
+    #[arg(long)]
+    pub budget: u64,
+    /// Optional committed range; requires a clean current HEAD matching its head.
+    #[arg(long)]
+    pub change: Option<String>,
+    #[command(flatten)]
+    pub analysis: AnalysisArgs,
 }

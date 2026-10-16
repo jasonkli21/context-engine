@@ -147,9 +147,7 @@ pub struct Hotspots {
     pub symbols_truncated: bool,
     pub files_truncated: bool,
 }
-pub fn hotspots(g: &RepositoryGraph, limit: usize) -> Result<Hotspots, &'static str> {
-    validate_limit(limit)?;
-    let owners = file_owners(g);
+pub fn structural_metrics(g: &RepositoryGraph, owners: &[Option<usize>]) -> Vec<Metrics> {
     let mut metrics = vec![Metrics::default(); g.entities.len()];
     let mut incoming = vec![BTreeSet::new(); g.entities.len()];
     let mut outgoing = vec![BTreeSet::new(); g.entities.len()];
@@ -212,6 +210,12 @@ pub fn hotspots(g: &RepositoryGraph, limit: usize) -> Result<Hotspots, &'static 
         metrics[i].fan_in = incoming[i].len();
         metrics[i].fan_out = outgoing[i].len();
     }
+    metrics
+}
+
+pub fn hotspots(g: &RepositoryGraph, limit: usize) -> Result<Hotspots, &'static str> {
+    validate_limit(limit)?;
+    let metrics = structural_metrics(g, &file_owners(g));
     let mut symbols: Vec<_> = g
         .entities
         .iter()
