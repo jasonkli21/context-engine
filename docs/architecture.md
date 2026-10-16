@@ -582,9 +582,10 @@ Phase 0 Git metadata is only a thin foundation and must not prematurely encode t
 
 ---
 
-## 22. Future task-context ranking
+## 22. Current task-context ranking
 
-Task context should be compiled from evidence rather than repository dumping:
+The synchronous `context` command compiles a task bundle from the current
+repository model rather than dumping the repository:
 
 ```text
 task
@@ -603,7 +604,23 @@ budget selection
 ContextBundle
 ```
 
-Ranking should expose why an item was selected. Embeddings may become an optional signal later; they are not a foundational requirement.
+The current file-level ranker exposes capped integer scores and stable reason
+codes under `file-ranker-v1`, then greedily selects complete UTF-8 files under an
+exact byte budget. It reuses the canonical repository graph and the safe source
+loader; output rendering does not read repository files. Path, symbol, file-role,
+optional committed-change, and secondary centrality evidence are active signals.
+
+Graph evidence is awarded only when traversal reaches a different file owner than
+the seed. Direct ownership remains path, symbol, or change evidence. Current
+reference resolution is same-file only, so the ranker does not yet retrieve a
+separate file or test through graph edges. A test matched directly by its path or
+symbols is labeled as a direct test match; a related test label requires actual
+qualifying graph evidence and does not imply coverage.
+
+Later work may add supported cross-file relations, snippet or token budgeting,
+embeddings as an optional signal, or persistent indexes. Those are extensions to
+the existing ranking and packing seam, not prerequisites for its local offline
+operation.
 
 ---
 

@@ -13,14 +13,100 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
-pub const RANKER_VERSION: &str = "file-ranker-v1";
+/// The public scoring, explanation, and ordering constants for file-ranker-v1.
+/// Update the version and its contract test together when these semantics change.
+pub mod ranker_v1 {
+    pub const VERSION: &str = "file-ranker-v1";
+
+    pub const REASON_PATH_COMPONENT_EXACT: &str = "path_component_exact";
+    pub const REASON_PATH_PREFIX: &str = "path_prefix";
+    pub const REASON_PATH_SUBSTRING: &str = "path_substring";
+    pub const REASON_PATH_PHRASE: &str = "path_phrase";
+    pub const REASON_SYMBOL_QUALIFIED_EXACT: &str = "symbol_qualified_exact";
+    pub const REASON_SYMBOL_LOCAL_EXACT: &str = "symbol_local_exact";
+    pub const REASON_SYMBOL_PREFIX: &str = "symbol_prefix";
+    pub const REASON_SYMBOL_SUBSTRING: &str = "symbol_substring";
+    pub const REASON_GRAPH_DISTANCE_1: &str = "graph_distance_1";
+    pub const REASON_GRAPH_DISTANCE_2: &str = "graph_distance_2";
+    pub const REASON_RELATED_TEST_CANDIDATE: &str = "related_test_candidate";
+    pub const REASON_DIRECT_TEST_MATCH: &str = "direct_test_match";
+    pub const REASON_DIRECT_TASK_ROLE_MATCH: &str = "direct_task_role_match";
+    pub const REASON_CHANGED_SYMBOL_OWNER: &str = "changed_symbol_owner";
+    pub const REASON_CHANGED_FILE: &str = "changed_file";
+    pub const REASON_CHANGE_DISTANCE_1: &str = "change_distance_1";
+    pub const REASON_CHANGE_DISTANCE_2: &str = "change_distance_2";
+    pub const REASON_CENTRALITY_ACTIVITY: &str = "centrality_activity";
+    pub const REASON_CENTRALITY_FALLBACK: &str = "centrality_fallback";
+
+    pub const PATH_COMPONENT_EXACT: u16 = 30;
+    pub const PATH_PREFIX: u16 = 18;
+    pub const PATH_SUBSTRING: u16 = 10;
+    pub const PATH_PHRASE: u16 = 12;
+    pub const PATH_CAP: u16 = 60;
+
+    pub const SYMBOL_QUALIFIED_EXACT: u16 = 45;
+    pub const SYMBOL_LOCAL_EXACT: u16 = 40;
+    pub const SYMBOL_PREFIX: u16 = 26;
+    pub const SYMBOL_SUBSTRING: u16 = 15;
+    pub const SYMBOL_CAP: u16 = 90;
+    pub const MAX_EXPLAINED_SYMBOLS: usize = 8;
+
+    // Distance zero is seed ownership, not graph evidence for another file.
+    pub const GRAPH_DISTANCE: [u16; 3] = [0, 20, 10];
+    pub const GRAPH_REASONS: [&str; 3] = ["", REASON_GRAPH_DISTANCE_1, REASON_GRAPH_DISTANCE_2];
+
+    pub const RELATED_TEST_ROLE: u16 = 12;
+    pub const DIRECT_TEST_ROLE: u16 = 8;
+    pub const DIRECT_SUPPORTING_ROLE: u16 = 6;
+
+    pub const CHANGED_SYMBOL_OWNER: u16 = 40;
+    pub const CHANGED_FILE: u16 = 32;
+    pub const CHANGE_DISTANCE: [u16; 3] = [0, 20, 10];
+    pub const CHANGE_REASONS: [&str; 3] = ["", REASON_CHANGE_DISTANCE_1, REASON_CHANGE_DISTANCE_2];
+    pub const TASK_SYMBOL_ROOT_PRIORITY: u16 = 100;
+    pub const CHANGE_FILE_ROOT_PRIORITY: u16 = 32;
+    pub const CHANGE_SYMBOL_ROOT_PRIORITY: u16 = 140;
+
+    pub const CENTRALITY_ACTIVITY_CAP: usize = 4;
+    pub const CENTRALITY_FAN_IN_CAP: usize = 3;
+    pub const CENTRALITY_FAN_OUT_CAP: usize = 3;
+    pub const FALLBACK_FILES: usize = 20;
+
+    pub const FILE_ORDER: &str =
+        "total_desc,symbol_desc,path_desc,change_desc,graph_desc,centrality_desc,native_path_asc";
+
+    pub const REASON_CODES: &[&str] = &[
+        REASON_PATH_COMPONENT_EXACT,
+        REASON_PATH_PREFIX,
+        REASON_PATH_SUBSTRING,
+        REASON_PATH_PHRASE,
+        REASON_SYMBOL_QUALIFIED_EXACT,
+        REASON_SYMBOL_LOCAL_EXACT,
+        REASON_SYMBOL_PREFIX,
+        REASON_SYMBOL_SUBSTRING,
+        REASON_GRAPH_DISTANCE_1,
+        REASON_GRAPH_DISTANCE_2,
+        REASON_RELATED_TEST_CANDIDATE,
+        REASON_DIRECT_TEST_MATCH,
+        REASON_DIRECT_TASK_ROLE_MATCH,
+        REASON_CHANGED_SYMBOL_OWNER,
+        REASON_CHANGED_FILE,
+        REASON_CHANGE_DISTANCE_1,
+        REASON_CHANGE_DISTANCE_2,
+        REASON_CENTRALITY_ACTIVITY,
+        REASON_CENTRALITY_FALLBACK,
+    ];
+}
+pub const RANKER_VERSION: &str = ranker_v1::VERSION;
 pub const MAX_TASK_BYTES: usize = 4096;
 pub const MAX_TASK_TERMS: usize = 64;
 pub const MAX_BUDGET: u64 = 16 * 1024 * 1024;
 pub const MAX_SELECTED: usize = 200;
 pub const MAX_SKIPS: usize = 50;
-const MAX_SYMBOLS: usize = 8;
-const FALLBACK_FILES: usize = 20;
+const MAX_SYMBOLS: usize = ranker_v1::MAX_EXPLAINED_SYMBOLS;
+const FALLBACK_FILES: usize = ranker_v1::FALLBACK_FILES;
+pub const MAX_LOAD_ATTEMPTS: usize = 256;
+pub const MAX_LOAD_BYTES: u64 = 64 * 1024 * 1024;
 
 pub struct Task {
     pub original: String,
@@ -130,6 +216,10 @@ pub struct Bundle {
     pub used: u64,
     pub budget_skips: usize,
     pub load_failures: usize,
+    pub load_attempts: usize,
+    pub load_bytes_reserved: u64,
+    pub load_safety_limited: bool,
+    pub load_candidates_omitted: usize,
     pub skips_omitted: usize,
     pub selection_omitted: usize,
 }
@@ -154,20 +244,25 @@ pub fn path_score(path: &str, task: &Task) -> (u16, BTreeSet<&'static str>) {
     let mut reasons = BTreeSet::new();
     for term in &task.terms {
         let (value, reason) = if components.contains(&term.as_str()) || text == *term {
-            (30, "path_component_exact")
+            (
+                ranker_v1::PATH_COMPONENT_EXACT,
+                ranker_v1::REASON_PATH_COMPONENT_EXACT,
+            )
         } else if text.starts_with(term) || components.iter().any(|c| c.starts_with(term)) {
-            (18, "path_prefix")
+            (ranker_v1::PATH_PREFIX, ranker_v1::REASON_PATH_PREFIX)
         } else if text.contains(term) {
-            (10, "path_substring")
+            (ranker_v1::PATH_SUBSTRING, ranker_v1::REASON_PATH_SUBSTRING)
         } else {
             continue;
         };
-        score = score.saturating_add(value).min(60);
+        score = score.saturating_add(value).min(ranker_v1::PATH_CAP);
         reasons.insert(reason);
     }
     if !task.phrase.is_empty() && text.contains(&task.phrase) {
-        score = (score + 12).min(60);
-        reasons.insert("path_phrase");
+        score = score
+            .saturating_add(ranker_v1::PATH_PHRASE)
+            .min(ranker_v1::PATH_CAP);
+        reasons.insert(ranker_v1::REASON_PATH_PHRASE);
     }
     (score, reasons)
 }
@@ -178,13 +273,22 @@ fn symbol_score(name: &str, qualified: &str, task: &Task) -> (u16, &'static str)
         .iter()
         .map(|term| {
             if qualified == *term {
-                (45, "symbol_qualified_exact")
+                (
+                    ranker_v1::SYMBOL_QUALIFIED_EXACT,
+                    ranker_v1::REASON_SYMBOL_QUALIFIED_EXACT,
+                )
             } else if name == *term {
-                (40, "symbol_local_exact")
+                (
+                    ranker_v1::SYMBOL_LOCAL_EXACT,
+                    ranker_v1::REASON_SYMBOL_LOCAL_EXACT,
+                )
             } else if qualified.starts_with(term) || name.starts_with(term) {
-                (26, "symbol_prefix")
+                (ranker_v1::SYMBOL_PREFIX, ranker_v1::REASON_SYMBOL_PREFIX)
             } else if qualified.contains(term) || name.contains(term) {
-                (15, "symbol_substring")
+                (
+                    ranker_v1::SYMBOL_SUBSTRING,
+                    ranker_v1::REASON_SYMBOL_SUBSTRING,
+                )
             } else {
                 (0, "")
             }
@@ -193,6 +297,16 @@ fn symbol_score(name: &str, qualified: &str, task: &Task) -> (u16, &'static str)
         .unwrap_or((0, ""))
 }
 fn sort_candidates(g: &RepositoryGraph, candidates: &mut [Candidate]) {
+    debug_assert_eq!(
+        ranker_v1::FILE_ORDER,
+        "total_desc,symbol_desc,path_desc,change_desc,graph_desc,centrality_desc,native_path_asc"
+    );
+    debug_assert!(candidates.iter().all(|candidate| {
+        candidate
+            .reasons
+            .iter()
+            .all(|reason| ranker_v1::REASON_CODES.contains(reason))
+    }));
     candidates.sort_by(|a, b| {
         let key = |c: &Candidate| {
             Reverse((
@@ -210,6 +324,38 @@ fn sort_candidates(g: &RepositoryGraph, candidates: &mut [Candidate]) {
                 .cmp(&g.index.files[b.file].relative_path)
         })
     });
+}
+fn record_traversal_evidence(
+    candidates: &mut [Candidate],
+    owners: &[Option<usize>],
+    root: EntityId,
+    distances: &BTreeMap<EntityId, u8>,
+    from_change: bool,
+) {
+    let root_owner = owners[root.0 as usize];
+    for (&id, &distance) in distances {
+        let Some(file) = owners[id.0 as usize] else {
+            continue;
+        };
+        // A root's own file is already represented by direct path, symbol, or
+        // change evidence. Graph evidence must reach a distinct file.
+        if distance == 0 || root_owner == Some(file) {
+            continue;
+        }
+        let candidate = &mut candidates[file];
+        candidate.graph_distance = Some(
+            candidate
+                .graph_distance
+                .map_or(distance, |existing| existing.min(distance)),
+        );
+        if from_change {
+            candidate.change_distance = Some(
+                candidate
+                    .change_distance
+                    .map_or(distance, |existing| existing.min(distance)),
+            );
+        }
+    }
 }
 // One traversal call shares all operation-wide ceilings across lexical and change roots.
 // Root origin is retained so change distances do not accidentally become task evidence.
@@ -231,7 +377,10 @@ pub fn rank(g: &RepositoryGraph, task: &Task, changes: Option<&ChangeSignal>) ->
         }
         let m = &metrics[1 + c.file];
         c.score.centrality =
-            (m.structural_activity.min(4) + m.incoming.min(3) + m.outgoing.min(3)) as u16;
+            (m.structural_activity
+                .min(ranker_v1::CENTRALITY_ACTIVITY_CAP)
+                + m.incoming.min(ranker_v1::CENTRALITY_FAN_IN_CAP)
+                + m.outgoing.min(ranker_v1::CENTRALITY_FAN_OUT_CAP)) as u16;
     }
     for (i, s) in g.index.symbols.iter().enumerate() {
         let id = EntityId((1 + g.index.files.len() + i) as u32);
@@ -244,14 +393,18 @@ pub fn rank(g: &RepositoryGraph, task: &Task, changes: Option<&ChangeSignal>) ->
         let (value, reason) = symbol_score(&s.name, &s.qualified_name, task);
         if value > 0 {
             matches[file].push((Reverse(value), i, reason));
-            seeds.insert(id, (100 + value, false));
+            seeds.insert(id, (ranker_v1::TASK_SYMBOL_ROOT_PRIORITY + value, false));
         }
     }
     for (c, matching) in candidates.iter_mut().zip(&mut matches) {
         matching.sort();
         c.symbols_omitted = matching.len().saturating_sub(MAX_SYMBOLS);
         for &(Reverse(score), index, reason) in matching.iter().take(MAX_SYMBOLS) {
-            c.score.lexical_symbol = (c.score.lexical_symbol + score).min(90);
+            c.score.lexical_symbol = c
+                .score
+                .lexical_symbol
+                .saturating_add(score)
+                .min(ranker_v1::SYMBOL_CAP);
             c.symbols.push(index);
             c.reasons.insert(reason);
         }
@@ -262,15 +415,21 @@ pub fn rank(g: &RepositoryGraph, task: &Task, changes: Option<&ChangeSignal>) ->
                 continue;
             }
             candidates[file].score.change = value;
-            candidates[file].reasons.insert(if value == 40 {
-                "changed_symbol_owner"
-            } else {
-                "changed_file"
-            });
+            candidates[file]
+                .reasons
+                .insert(if value == ranker_v1::CHANGED_SYMBOL_OWNER {
+                    ranker_v1::REASON_CHANGED_SYMBOL_OWNER
+                } else {
+                    ranker_v1::REASON_CHANGED_FILE
+                });
         }
         for &id in &change.seeds {
             if owners[id.0 as usize].is_some_and(|f| eligible(g.index.files[f].role)) {
-                let priority = if g.symbol(id).is_some() { 140 } else { 32 };
+                let priority = if g.symbol(id).is_some() {
+                    ranker_v1::CHANGE_SYMBOL_ROOT_PRIORITY
+                } else {
+                    ranker_v1::CHANGE_FILE_ROOT_PRIORITY
+                };
                 seeds
                     .entry(id)
                     .and_modify(|s| {
@@ -301,16 +460,13 @@ pub fn rank(g: &RepositoryGraph, task: &Task, changes: Option<&ChangeSignal>) ->
     );
     for root in &result.results {
         let from_change = seeds[&root.root].1;
-        for (&id, &distance) in &root.distances {
-            let Some(file) = owners[id.0 as usize] else {
-                continue;
-            };
-            let c = &mut candidates[file];
-            c.graph_distance = Some(c.graph_distance.map_or(distance, |d| d.min(distance)));
-            if from_change {
-                c.change_distance = Some(c.change_distance.map_or(distance, |d| d.min(distance)));
-            }
-        }
+        record_traversal_evidence(
+            &mut candidates,
+            &owners,
+            root.root,
+            &root.distances,
+            from_change,
+        );
     }
     let eligible_count = candidates
         .iter()
@@ -321,44 +477,37 @@ pub fn rank(g: &RepositoryGraph, task: &Task, changes: Option<&ChangeSignal>) ->
             return false;
         }
         if let Some(d) = c.graph_distance {
-            c.score.graph = [30, 20, 10][d as usize];
-            c.reasons
-                .insert(["graph_distance_0", "graph_distance_1", "graph_distance_2"][d as usize]);
+            c.score.graph = ranker_v1::GRAPH_DISTANCE[d as usize];
+            c.reasons.insert(ranker_v1::GRAPH_REASONS[d as usize]);
         }
         if let Some(d) = c.change_distance {
-            let boost = [32, 20, 10][d as usize];
+            let boost = ranker_v1::CHANGE_DISTANCE[d as usize];
             if boost > c.score.change {
                 c.score.change = boost;
-                c.reasons.insert(
-                    [
-                        "change_distance_0",
-                        "change_distance_1",
-                        "change_distance_2",
-                    ][d as usize],
-                );
+                c.reasons.insert(ranker_v1::CHANGE_REASONS[d as usize]);
             }
         }
         let direct = c.score.lexical_path > 0 || c.score.lexical_symbol > 0;
         match g.index.files[c.file].role {
-            FileRole::Test if c.graph_distance.is_some() => {
-                c.score.role = 12;
-                c.reasons.insert("related_test_candidate");
-            }
             FileRole::Test if direct => {
-                c.score.role = 8;
-                c.reasons.insert("direct_test_match");
+                c.score.role = ranker_v1::DIRECT_TEST_ROLE;
+                c.reasons.insert(ranker_v1::REASON_DIRECT_TEST_MATCH);
+            }
+            FileRole::Test if c.graph_distance.is_some() => {
+                c.score.role = ranker_v1::RELATED_TEST_ROLE;
+                c.reasons.insert(ranker_v1::REASON_RELATED_TEST_CANDIDATE);
             }
             FileRole::Documentation | FileRole::Configuration | FileRole::Schema if direct => {
-                c.score.role = 6;
-                c.reasons.insert("direct_task_role_match");
+                c.score.role = ranker_v1::DIRECT_SUPPORTING_ROLE;
+                c.reasons.insert(ranker_v1::REASON_DIRECT_TASK_ROLE_MATCH);
             }
             _ => (),
         }
         if c.score.centrality > 0 {
-            c.reasons.insert("centrality_activity");
+            c.reasons.insert(ranker_v1::REASON_CENTRALITY_ACTIVITY);
         }
         if fallback {
-            c.reasons.insert("centrality_fallback");
+            c.reasons.insert(ranker_v1::REASON_CENTRALITY_FALLBACK);
         }
         fallback || direct || c.score.graph > 0 || c.score.change > 0
     });
@@ -383,15 +532,62 @@ pub fn rank(g: &RepositoryGraph, task: &Task, changes: Option<&ChangeSignal>) ->
 }
 
 pub fn select(g: &RepositoryGraph, ranking: Ranking, budget: u64) -> Bundle {
-    select_with_limits(g, ranking, budget, MAX_SELECTED, MAX_SKIPS, MAX_BUDGET)
+    select_with_work_limits(
+        g,
+        ranking,
+        budget,
+        SelectionLimits {
+            max_selected: MAX_SELECTED,
+            max_skips: MAX_SKIPS,
+            max_file_bytes: MAX_BUDGET,
+        },
+        LoadWorkLimits {
+            max_attempts: MAX_LOAD_ATTEMPTS,
+            max_reserved_bytes: MAX_LOAD_BYTES,
+        },
+    )
 }
+#[derive(Clone, Copy)]
+struct SelectionLimits {
+    max_selected: usize,
+    max_skips: usize,
+    max_file_bytes: u64,
+}
+#[derive(Clone, Copy)]
+struct LoadWorkLimits {
+    max_attempts: usize,
+    max_reserved_bytes: u64,
+}
+#[cfg(test)]
 fn select_with_limits(
     g: &RepositoryGraph,
-    mut ranking: Ranking,
+    ranking: Ranking,
     budget: u64,
     max_selected: usize,
     max_skips: usize,
     max_file: u64,
+) -> Bundle {
+    select_with_work_limits(
+        g,
+        ranking,
+        budget,
+        SelectionLimits {
+            max_selected,
+            max_skips,
+            max_file_bytes: max_file,
+        },
+        LoadWorkLimits {
+            max_attempts: MAX_LOAD_ATTEMPTS,
+            max_reserved_bytes: MAX_LOAD_BYTES,
+        },
+    )
+}
+fn select_with_work_limits(
+    g: &RepositoryGraph,
+    mut ranking: Ranking,
+    budget: u64,
+    selection_limits: SelectionLimits,
+    load_limits: LoadWorkLimits,
 ) -> Bundle {
     let candidates = std::mem::take(&mut ranking.candidates);
     let count = candidates.len();
@@ -403,21 +599,40 @@ fn select_with_limits(
         used: 0,
         budget_skips: 0,
         load_failures: 0,
+        load_attempts: 0,
+        load_bytes_reserved: 0,
+        load_safety_limited: false,
+        load_candidates_omitted: 0,
         skips_omitted: 0,
         selection_omitted: 0,
     };
     for (i, candidate) in candidates.into_iter().enumerate() {
-        if bundle.selected.len() >= max_selected {
+        if bundle.selected.len() >= selection_limits.max_selected {
             bundle.selection_omitted = count - i;
             break;
         }
         let remaining = budget - bundle.used;
+        let read_allowance = remaining.min(selection_limits.max_file_bytes);
+        // source::load can read at most allowance+1 bytes to reject a file that
+        // grows past its metadata size. Reserve that maximum before the call so
+        // failed candidates and metadata checks remain inside an operation cap.
+        let reservation = read_allowance.saturating_add(1);
+        if bundle.load_attempts >= load_limits.max_attempts
+            || bundle.load_bytes_reserved.saturating_add(reservation)
+                > load_limits.max_reserved_bytes
+        {
+            bundle.load_safety_limited = true;
+            bundle.load_candidates_omitted = count - i;
+            break;
+        }
+        bundle.load_attempts += 1;
+        bundle.load_bytes_reserved += reservation;
         // The loader reads at most remaining+1 bytes; rejected large files never
         // materialize their full contents. This same packer is used by baselines.
         let result = source::load(
             &g.index.root,
             &g.index.files[candidate.file].relative_path,
-            remaining.min(max_file),
+            read_allowance,
         );
         let reason = match result {
             Ok(content) => {
@@ -429,7 +644,7 @@ fn select_with_limits(
                 });
                 continue;
             }
-            Err(AnalysisStatus::TooLarge) if remaining < max_file => {
+            Err(AnalysisStatus::TooLarge) if remaining < selection_limits.max_file_bytes => {
                 bundle.budget_skips += 1;
                 "budget_exceeded"
             }
@@ -442,7 +657,7 @@ fn select_with_limits(
                 status.name()
             }
         };
-        if bundle.skipped.len() < max_skips {
+        if bundle.skipped.len() < selection_limits.max_skips {
             bundle.skipped.push(Skipped {
                 file: candidate.file,
                 rank: i + 1,
@@ -537,7 +752,7 @@ fn map_change(g: &RepositoryGraph, set: &change::ChangeSet) -> ChangeSignal {
     for f in &set.files {
         if let Some(after) = &f.git.after {
             if let Some(&i) = paths.get(after.path.as_path()) {
-                signal.files.insert(i, 32);
+                signal.files.insert(i, ranker_v1::CHANGED_FILE);
                 signal.seeds.insert(EntityId((1 + i) as u32));
             }
         } else {
@@ -560,7 +775,7 @@ fn map_change(g: &RepositoryGraph, set: &change::ChangeSet) -> ChangeSignal {
                 Some(indices) if indices.len() == 1 => {
                     let current = indices[0];
                     let file = paths[s.relative_path.as_path()];
-                    signal.files.insert(file, 40);
+                    signal.files.insert(file, ranker_v1::CHANGED_SYMBOL_OWNER);
                     signal
                         .seeds
                         .insert(EntityId((1 + g.index.files.len() + current) as u32));
@@ -664,10 +879,13 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(c("src/a.rs").score.lexical_symbol, 90);
-        assert_eq!(c("src/a.rs").graph_distance, Some(0));
-        assert_eq!(c("tests/spec.py").score.role, 12);
+        assert_eq!(c("src/a.rs").graph_distance, None);
+        assert_eq!(c("src/a.rs").score.graph, 0);
+        assert_eq!(c("tests/spec.py").graph_distance, None);
+        assert_eq!(c("tests/spec.py").score.role, ranker_v1::DIRECT_TEST_ROLE);
+        assert!(c("tests/spec.py").reasons.contains("direct_test_match"));
         assert!(
-            c("tests/spec.py")
+            !c("tests/spec.py")
                 .reasons
                 .contains("related_test_candidate")
         );
@@ -696,8 +914,7 @@ mod tests {
         let mut limited = Task::parse("needle").unwrap();
         limited.terms = vec!["needle_two".into()];
         let r = rank(&g, &limited, None);
-        // Matching symbol roots contribute distance zero to their owning files;
-        // unrelated files remain excluded despite the repository containment hub.
+        // Seed owners remain direct evidence; they do not receive graph evidence.
         assert!(
             r.candidates
                 .iter()
@@ -705,7 +922,7 @@ mod tests {
                     .relative_path
                     .extension()
                     .is_some_and(|e| e == "rs"))
-                .all(|c| c.graph_distance == Some(0))
+                .all(|c| c.graph_distance.is_none() && c.score.graph == 0)
         );
         let r = rank(&g, &Task::parse("absent").unwrap(), None);
         assert!(r.fallback);
@@ -774,48 +991,349 @@ mod tests {
         assert_eq!(r.fallback_omitted, 2);
     }
 
-    /// Fixture-authored expected files: symbol implementation and its local test
-    /// harness, or direct docs/config. Every file is 128 raw bytes; all three
-    /// strategies call the exact production packer with the same role eligibility.
+    #[test]
+    fn direct_matches_and_change_seed_owners_are_not_graph_evidence() {
+        let d = TempDir::new().unwrap();
+        write(d.path(), "src/changed.py", "def target(): pass\n");
+        write(
+            d.path(),
+            "tests/test_target.py",
+            "def target(): pass\ndef test_case(): target()\n",
+        );
+        let g = build(d.path());
+        let task = Task::parse("target").unwrap();
+        let ranked = rank(&g, &task, None);
+        let test = ranked
+            .candidates
+            .iter()
+            .find(|candidate| {
+                g.index.files[candidate.file].relative_path == Path::new("tests/test_target.py")
+            })
+            .unwrap();
+        assert_eq!(test.score.role, ranker_v1::DIRECT_TEST_ROLE);
+        assert_eq!(test.graph_distance, None);
+        assert!(test.reasons.contains("direct_test_match"));
+        assert!(!test.reasons.contains("related_test_candidate"));
+        assert!(ranked.candidates.iter().all(|candidate| {
+            candidate.graph_distance.is_none()
+                && candidate.score.graph == 0
+                && !candidate
+                    .reasons
+                    .iter()
+                    .any(|reason| reason.starts_with("graph_distance_"))
+        }));
+
+        let file = g
+            .index
+            .files
+            .iter()
+            .position(|file| file.relative_path == Path::new("src/changed.py"))
+            .unwrap();
+        let change = ChangeSignal {
+            range: "base..head".into(),
+            base: "base".into(),
+            head: "head".into(),
+            files_observed: 1,
+            symbols_observed: 0,
+            symbols_mapped: 0,
+            symbols_unmapped: 0,
+            ambiguous_keys: 0,
+            comparisons_unavailable: 0,
+            deleted_only: 0,
+            files: BTreeMap::from([(file, ranker_v1::CHANGED_FILE)]),
+            seeds: BTreeSet::from([EntityId((1 + file) as u32)]),
+        };
+        let changed = rank(&g, &Task::parse("absent").unwrap(), Some(&change));
+        let owner = changed
+            .candidates
+            .iter()
+            .find(|candidate| candidate.file == file)
+            .unwrap();
+        assert_eq!(owner.score.change, ranker_v1::CHANGED_FILE);
+        assert_eq!(owner.graph_distance, None);
+        assert_eq!(owner.change_distance, None);
+        assert!(!owner.reasons.iter().any(|reason| {
+            reason.starts_with("graph_distance_") || reason.starts_with("change_distance_")
+        }));
+    }
+
+    #[test]
+    fn traversal_evidence_requires_a_distinct_file_and_relation_distance() {
+        let mut candidates = vec![Candidate::new(0), Candidate::new(1)];
+        let owners = [None, Some(0), Some(0), Some(1)];
+        let root = EntityId(2); // symbol in file 0
+        let distances = BTreeMap::from([(root, 0), (EntityId(3), 1)]);
+        record_traversal_evidence(&mut candidates, &owners, root, &distances, true);
+        assert_eq!(candidates[0].graph_distance, None);
+        assert_eq!(candidates[0].change_distance, None);
+        assert_eq!(candidates[1].graph_distance, Some(1));
+        assert_eq!(candidates[1].change_distance, Some(1));
+    }
+
+    #[test]
+    fn direct_test_classification_survives_root_truncation() {
+        let d = TempDir::new().unwrap();
+        write(
+            d.path(),
+            "tests/test_hit.py",
+            (0..150)
+                .map(|i| format!("def hit_{i}(): pass\n"))
+                .collect::<String>(),
+        );
+        let g = build(d.path());
+        let r = rank(&g, &Task::parse("hit").unwrap(), None);
+        assert!(r.roots_omitted > 0);
+        let test = r.candidates.first().unwrap();
+        assert_eq!(g.index.files[test.file].role, FileRole::Test);
+        assert_eq!(test.score.role, ranker_v1::DIRECT_TEST_ROLE);
+        assert!(test.reasons.contains("direct_test_match"));
+        assert!(!test.reasons.contains("related_test_candidate"));
+        assert_eq!(test.graph_distance, None);
+        assert_eq!(test.score.graph, 0);
+    }
+
+    #[test]
+    fn candidate_load_work_stops_at_attempt_and_byte_limits() {
+        let d = TempDir::new().unwrap();
+        for path in [
+            "a_candidate.py",
+            "b_candidate.py",
+            "c_candidate.py",
+            "d_candidate.py",
+            "e_candidate.py",
+        ] {
+            write(d.path(), path, "def candidate(): pass\n");
+        }
+        fs::write(d.path().join("a_candidate.py"), [255]).unwrap();
+        fs::write(d.path().join("b_candidate.py"), [255]).unwrap();
+        fs::write(d.path().join("d_candidate.py"), "").unwrap();
+        let g = build(d.path());
+        fs::remove_file(d.path().join("c_candidate.py")).unwrap();
+        let ranking = || rank(&g, &Task::parse("candidate").unwrap(), None);
+
+        let attempts = select_with_work_limits(
+            &g,
+            ranking(),
+            10,
+            SelectionLimits {
+                max_selected: 200,
+                max_skips: 50,
+                max_file_bytes: 10,
+            },
+            LoadWorkLimits {
+                max_attempts: 2,
+                max_reserved_bytes: 100,
+            },
+        );
+        assert_eq!(attempts.load_attempts, 2);
+        assert_eq!(attempts.load_failures, 2);
+        assert_eq!(attempts.load_bytes_reserved, 22);
+        assert!(attempts.load_safety_limited);
+        assert_eq!(attempts.load_candidates_omitted, 3);
+        assert!(attempts.selected.is_empty());
+
+        let bytes = select_with_work_limits(
+            &g,
+            ranking(),
+            10,
+            SelectionLimits {
+                max_selected: 200,
+                max_skips: 50,
+                max_file_bytes: 10,
+            },
+            LoadWorkLimits {
+                max_attempts: 10,
+                max_reserved_bytes: 22,
+            },
+        );
+        assert_eq!(bytes.load_attempts, 2);
+        assert_eq!(bytes.load_bytes_reserved, 22);
+        assert_eq!(bytes.load_failures, 2);
+        assert!(bytes.selected.is_empty());
+        assert!(bytes.load_safety_limited);
+        assert_eq!(bytes.load_candidates_omitted, 3);
+
+        let mut zero_first = ranking();
+        zero_first.candidates.retain(|candidate| {
+            g.index.files[candidate.file].relative_path == Path::new("d_candidate.py")
+                || g.index.files[candidate.file].relative_path == Path::new("e_candidate.py")
+        });
+        zero_first
+            .candidates
+            .sort_by_key(|candidate| g.index.files[candidate.file].relative_path.clone());
+        let zeros = select_with_work_limits(
+            &g,
+            zero_first,
+            10,
+            SelectionLimits {
+                max_selected: 200,
+                max_skips: 50,
+                max_file_bytes: 10,
+            },
+            LoadWorkLimits {
+                max_attempts: 1,
+                max_reserved_bytes: 11,
+            },
+        );
+        assert_eq!(zeros.load_attempts, 1);
+        assert_eq!(zeros.used, 0);
+        assert_eq!(zeros.selected.len(), 1);
+        assert!(zeros.selected[0].content.is_empty());
+        assert!(zeros.load_safety_limited);
+        assert_eq!(zeros.load_candidates_omitted, 1);
+    }
+
+    #[test]
+    fn file_ranker_v1_contract_pins_scores_reasons_order_and_fallback() {
+        let d = TempDir::new().unwrap();
+        write(d.path(), "src/cache.py", "def cache(): pass\n");
+        write(
+            d.path(),
+            "tests/cache_contract.py",
+            "def test_contract(): pass\n",
+        );
+        write(d.path(), "a_notes/cache.md", "cache notes\n");
+        write(
+            d.path(),
+            "hub.py",
+            (0..80)
+                .map(|i| format!("def f{i}(): f0()\n"))
+                .collect::<String>(),
+        );
+        let g = build(d.path());
+        assert_eq!(RANKER_VERSION, "file-ranker-v1");
+        assert_eq!(
+            ranker_v1::FILE_ORDER,
+            "total_desc,symbol_desc,path_desc,change_desc,graph_desc,centrality_desc,native_path_asc"
+        );
+
+        let ranked = rank(&g, &Task::parse("cache").unwrap(), None);
+        let actual: Vec<_> = ranked
+            .candidates
+            .iter()
+            .map(|candidate| {
+                (
+                    g.index.files[candidate.file]
+                        .relative_path
+                        .to_string_lossy()
+                        .into_owned(),
+                    candidate.score.lexical_path,
+                    candidate.score.lexical_symbol,
+                    candidate.score.graph,
+                    candidate.score.role,
+                    candidate.score.change,
+                    candidate.score.centrality,
+                    candidate.reasons.iter().copied().collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        assert!(
+            actual
+                .iter()
+                .flat_map(|entry| &entry.7)
+                .all(|reason| { ranker_v1::REASON_CODES.contains(reason) })
+        );
+        assert_eq!(
+            actual,
+            vec![
+                (
+                    "src/cache.py".into(),
+                    42,
+                    45,
+                    0,
+                    0,
+                    0,
+                    0,
+                    vec![
+                        "path_component_exact",
+                        "path_phrase",
+                        "symbol_qualified_exact"
+                    ]
+                ),
+                (
+                    "tests/cache_contract.py".into(),
+                    42,
+                    0,
+                    0,
+                    8,
+                    0,
+                    0,
+                    vec!["direct_test_match", "path_component_exact", "path_phrase"]
+                ),
+                (
+                    "a_notes/cache.md".into(),
+                    42,
+                    0,
+                    0,
+                    6,
+                    0,
+                    0,
+                    vec![
+                        "direct_task_role_match",
+                        "path_component_exact",
+                        "path_phrase"
+                    ]
+                ),
+            ]
+        );
+        let fallback = rank(&g, &Task::parse("absent").unwrap(), None);
+        assert!(fallback.fallback);
+        assert_eq!(
+            g.index.files[fallback.candidates[0].file].relative_path,
+            Path::new("hub.py")
+        );
+        assert!(
+            fallback.candidates[0]
+                .reasons
+                .contains("centrality_fallback")
+        );
+    }
+
+    /// Labels are fixture-authored before ranking. Test files are expected because
+    /// their paths directly match the task and their test role is useful; none is
+    /// presented as a cross-file graph association or coverage fact.
     #[test]
     fn expected_file_recall_benchmark() {
         let d = TempDir::new().unwrap();
         let fixtures = [
-            ("a_notes/dispatch.md", "dispatch migration notes\n"),
-            ("a_notes/hydrate.md", "hydrate migration notes\n"),
-            ("a_notes/verify.md", "verify migration notes\n"),
-            ("a_notes/encode.md", "encode migration notes\n"),
+            ("a_notes/cache.md", "cache migration notes\n"),
+            ("a_cache_helper.rs", "pub fn helper() {}\n"),
+            ("src/cache.py", "def cache(): return True\n"),
+            (
+                "tests/test_cache_contract.py",
+                "from cache import cache\ndef test_contract(): assert cache()\n",
+            ),
+            ("a_notes/router.md", "router migration notes\n"),
+            ("a_router_helper.rs", "pub fn helper() {}\n"),
             (
                 "src/router.rs",
-                "fn dispatch() {}\nfn run() { dispatch(); }\n",
+                "pub fn router(value: &str) -> bool { !value.is_empty() }\n",
             ),
             (
-                "tests/router.rs",
-                "fn dispatch() {}\n#[test]\nfn test_route() { dispatch(); }\n",
+                "tests/router_contract.rs",
+                "use crate::router::router;\n#[test] fn rejects_unknown() { assert!(!router(\"\")); }\n",
+            ),
+            ("a_notes/retry.md", "retry migration notes\n"),
+            ("a_retry_helper.rs", "pub fn helper() {}\n"),
+            ("src/retry.py", "def retry(attempts): return attempts > 0\n"),
+            (
+                "tests/test_retry_policy.py",
+                "from retry import retry\ndef honors_delay(): assert retry(1)\n",
+            ),
+            ("a_notes/codec.md", "codec migration notes\n"),
+            ("a_codec_helper.rs", "pub fn helper() {}\n"),
+            (
+                "src/codec.rs",
+                "pub fn codec(input: &[u8]) -> Vec<u8> { input.to_vec() }\n",
             ),
             (
-                "src/storage.py",
-                "def hydrate(): pass\ndef load(): hydrate()\n",
+                "tests/codec_roundtrip.rs",
+                "use crate::codec::codec;\n#[test] fn preserves_roundtrip() { assert_eq!(codec(b\"x\"), b\"x\"); }\n",
             ),
-            (
-                "tests/test_storage.py",
-                "def hydrate(): pass\ndef test_load(): hydrate()\n",
-            ),
-            ("src/check.rs", "fn verify() {}\nfn check() { verify(); }\n"),
-            (
-                "tests/check.rs",
-                "fn verify() {}\n#[test]\nfn test_check() { verify(); }\n",
-            ),
-            (
-                "src/codec.py",
-                "def encode(): pass\ndef write(): encode()\n",
-            ),
-            (
-                "tests/test_codec.py",
-                "def encode(): pass\ndef test_write(): encode()\n",
-            ),
+            ("a_setup_helper.rs", "pub fn helper() {}\n"),
             ("docs/setup.md", "setup instructions\n"),
             ("config/setup.toml", "setup = true\n"),
+            ("a_protocol_helper.rs", "pub fn helper() {}\n"),
             ("docs/protocol.md", "protocol documentation\n"),
             ("schema/protocol.json", "{}\n"),
         ];
@@ -828,49 +1346,152 @@ mod tests {
         }
         let g = build(d.path());
         let scenarios = [
-            ("dispatch", 256, ["src/router.rs", "tests/router.rs"]),
-            ("hydrate", 256, ["src/storage.py", "tests/test_storage.py"]),
-            ("verify", 256, ["src/check.rs", "tests/check.rs"]),
-            ("encode", 256, ["src/codec.py", "tests/test_codec.py"]),
-            ("setup", 256, ["docs/setup.md", "config/setup.toml"]),
-            (
-                "protocol",
-                256,
-                ["docs/protocol.md", "schema/protocol.json"],
-            ),
+            ("cache", ["src/cache.py", "tests/test_cache_contract.py"]),
+            ("router", ["src/router.rs", "tests/router_contract.rs"]),
+            ("retry", ["src/retry.py", "tests/test_retry_policy.py"]),
+            ("codec", ["src/codec.rs", "tests/codec_roundtrip.rs"]),
+            ("setup", ["docs/setup.md", "config/setup.toml"]),
+            ("protocol", ["docs/protocol.md", "schema/protocol.json"]),
         ];
-        let mut total_hits = [0usize; 3];
-        for (text, budget, expected) in scenarios {
+        let strategies = [
+            "production",
+            "prephase_path_symbol_search",
+            "path_order",
+            "path_lexical",
+            "production_without_role",
+        ];
+        let mut total_hits = [0usize; 5];
+        for (text, expected) in scenarios {
+            let budget = 256;
             let task = Task::parse(text).unwrap();
-            let mut scenario_hits = [0; 3];
-            for strategy in 0..3 {
-                let mut ranking = rank(&g, &task, None);
-                if strategy > 0 {
-                    ranking.candidates = g
-                        .index
-                        .files
+            let expected_test = expected
+                .iter()
+                .find(|path| path.starts_with("tests/"))
+                .copied();
+            if let Some(test_path) = expected_test {
+                let file = g
+                    .index
+                    .files
+                    .iter()
+                    .position(|f| f.relative_path == Path::new(test_path))
+                    .unwrap();
+                let owners = query::file_owners(&g);
+                let symbol_search = query::search(
+                    &g.index,
+                    text,
+                    query::SearchKind::Symbol,
+                    query::MAX_RESULTS,
+                )
+                .unwrap();
+                assert!(
+                    !symbol_search
+                        .matches
                         .iter()
-                        .enumerate()
-                        .filter(|(_, f)| eligible(f.role))
-                        .map(|(i, _)| Candidate::new(i))
-                        .collect();
-                    if strategy == 2 {
-                        ranking.candidates.sort_by_key(|c| {
-                            (
-                                Reverse(
-                                    path_score(
-                                        &utf8_relative(&g.index.files[c.file].relative_path)
-                                            .unwrap(),
-                                        &task,
-                                    )
-                                    .0,
-                                ),
-                                g.index.files[c.file].relative_path.clone(),
+                        .any(|m| owners[m.entity.0 as usize] == Some(file))
+                );
+                let candidate = rank(&g, &task, None)
+                    .candidates
+                    .into_iter()
+                    .find(|candidate| candidate.file == file)
+                    .unwrap();
+                assert!(candidate.reasons.contains("direct_test_match"));
+                assert!(!candidate.reasons.contains("related_test_candidate"));
+                assert_eq!(candidate.graph_distance, None);
+            }
+            let mut scenario_hits = [0; 5];
+            let mut scenario_selected = Vec::with_capacity(strategies.len());
+            for strategy in 0..strategies.len() {
+                let mut ranking = match strategy {
+                    0 | 4 => rank(&g, &task, None),
+                    1 => {
+                        let found = query::search(
+                            &g.index,
+                            text,
+                            query::SearchKind::All,
+                            query::MAX_RESULTS,
+                        )
+                        .unwrap();
+                        let owners = query::file_owners(&g);
+                        let mut seen = BTreeSet::new();
+                        let candidates = found
+                            .matches
+                            .into_iter()
+                            .filter_map(|matched| owners[matched.entity.0 as usize])
+                            .filter(|&file| eligible(g.index.files[file].role) && seen.insert(file))
+                            .map(Candidate::new)
+                            .collect();
+                        Ranking {
+                            candidates,
+                            eligible: g.index.files.iter().filter(|f| eligible(f.role)).count(),
+                            fallback: false,
+                            fallback_omitted: 0,
+                            roots: 0,
+                            roots_omitted: 0,
+                            graph_truncated: false,
+                        }
+                    }
+                    2 | 3 => Ranking {
+                        candidates: g
+                            .index
+                            .files
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, f)| eligible(f.role))
+                            .map(|(i, _)| Candidate::new(i))
+                            .collect(),
+                        eligible: g.index.files.iter().filter(|f| eligible(f.role)).count(),
+                        fallback: false,
+                        fallback_omitted: 0,
+                        roots: 0,
+                        roots_omitted: 0,
+                        graph_truncated: false,
+                    },
+                    _ => unreachable!(),
+                };
+                if strategy == 2 {
+                    ranking.candidates.sort_by_key(|candidate| {
+                        g.index.files[candidate.file].relative_path.clone()
+                    });
+                } else if strategy == 3 {
+                    ranking.candidates.sort_by_key(|candidate| {
+                        (
+                            Reverse(
+                                path_score(
+                                    &utf8_relative(&g.index.files[candidate.file].relative_path)
+                                        .unwrap(),
+                                    &task,
+                                )
+                                .0,
+                            ),
+                            g.index.files[candidate.file].relative_path.clone(),
+                        )
+                    });
+                } else if strategy == 4 {
+                    for candidate in &mut ranking.candidates {
+                        candidate.score.role = 0;
+                        candidate.reasons.retain(|reason| {
+                            !matches!(
+                                *reason,
+                                "direct_test_match"
+                                    | "related_test_candidate"
+                                    | "direct_task_role_match"
                             )
                         });
                     }
+                    sort_candidates(&g, &mut ranking.candidates);
                 }
                 let b = select(&g, ranking, budget);
+                let selected_paths: Vec<_> = b
+                    .selected
+                    .iter()
+                    .map(|selected| {
+                        g.index.files[selected.candidate.file]
+                            .relative_path
+                            .to_string_lossy()
+                            .into_owned()
+                    })
+                    .collect();
+                scenario_selected.push(selected_paths);
                 let hits = b
                     .selected
                     .iter()
@@ -885,13 +1506,24 @@ mod tests {
                 total_hits[strategy] += hits;
             }
             eprintln!(
-                "benchmark task={text:?} budget={budget} expected={expected:?} hits(rank,path,lex)={scenario_hits:?}/2 used=[256,256,256]"
+                "benchmark task={text:?} budget={budget} expected={expected:?} strategy_hits={strategies:?}:{scenario_hits:?}/2 selected={scenario_selected:?} bytes=[256,256,256,256,256]"
+            );
+            assert_eq!(scenario_hits[0], 2);
+            assert_eq!(scenario_hits[1], 1);
+            assert_eq!(scenario_hits[2], 0);
+            assert_eq!(
+                scenario_hits[4],
+                if expected_test.is_some() { 2 } else { 1 }
             );
         }
         eprintln!(
-            "benchmark total_hits(rank,path,lex)={total_hits:?}/12 macro={:?}",
+            "benchmark aggregate strategies={strategies:?} hits={total_hits:?}/12 macro_recall={:?}",
             total_hits.map(|h| h as f64 / 12.0)
         );
-        assert!(total_hits[0] > total_hits[1] && total_hits[0] > total_hits[2]);
+        assert_eq!(total_hits[0], 12);
+        assert!(total_hits[0] > total_hits[1]);
+        assert!(total_hits[0] > total_hits[2]);
+        assert!(total_hits[0] > total_hits[3]);
+        assert!(total_hits[0] > total_hits[4]);
     }
 }

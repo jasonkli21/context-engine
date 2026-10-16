@@ -4,6 +4,12 @@
 **Starting commit:** `4579d5bcfef0a7b8e4bada93da8b0722c39d37d3`\
 **Disposition:** implemented and locally verified; fresh independent review required
 
+The first independent review found ranking-evidence, load-work-bound, ranker-version,
+and benchmark-validity issues. The original benchmark metrics are recorded as
+superseded in the [Phase 5 review-fix report](phase-5-review-fix-report.md); the
+corrected benchmark below replaces them. This report's initial verification
+figures remain author-side evidence for the original implementation.
+
 The maintainer directly authorized Phase 5 while Phase 4 fresh re-review and
 prior final dispositions remain pending. Authorization is not independent
 acceptance of either phase. The scheduled implementation began at the requested
@@ -62,15 +68,17 @@ weight tuning was performed.
 | --- | --- | --- |
 | lexical_path | exact path component/stem 30; prefix 18; substring 10; whole normalized phrase hit +12 | 60 |
 | lexical_symbol | qualified exact 45; local exact 40; qualified/local prefix 26; substring 15; strongest tier per symbol, aggregate strongest eight | 90 |
-| graph | minimum visited entity distance mapped to owner file: 0 → 30, 1 → 20, 2 → 10 | 30 |
-| role | reached test 12; otherwise direct test match 8; directly matched doc/config/schema 6 | 12 |
-| change | unique changed-symbol owner 40; direct changed file 32; changed-root distance 1 → 20, 2 → 10; strongest applicable value | 40 |
+| graph | minimum distance 1 → 20 or 2 → 10 to a distinct file owner; seed-owner identity receives no graph score | 20 |
+| role | non-direct test reached through qualifying graph evidence 12; direct test match 8; directly matched doc/config/schema 6 | 12 |
+| change | unique changed-symbol owner 40; direct changed file 32; distinct-owner changed-root distance 1 → 20, 2 → 10; strongest applicable value | 40 |
 | centrality | min(file structural activity, 4) + min(incoming references, 3) + min(outgoing references, 3) | 10 |
 
 Each nonzero component has stable reason codes, including `path_component_exact`,
-`symbol_qualified_exact`, `graph_distance_0`, `related_test_candidate`,
+`symbol_qualified_exact`, `graph_distance_1`, `related_test_candidate`,
 `direct_task_role_match`, `changed_symbol_owner`, and `centrality_activity`.
-A candidate's total is the bounded sum (maximum 242). Sorting descends by total,
+A candidate's total is the bounded sum (maximum 232). The v1 weights, reason
+vocabulary, root priorities, fallback cap, and sorting key are centralized beside
+the ranker and pinned by a contract regression. Sorting descends by total,
 symbol, path, change, graph, centrality and finally ascends by native relative path.
 Matched symbols are sorted by strength then canonical symbol order; all matching
 symbols can seed traversal, independently of the eight-symbol explanation cap.
@@ -122,6 +130,16 @@ existing 50,000-entity graph ceiling. Reasons have a fixed finite code vocabular
 Non-UTF-8 paths retain native internal identity and explicit lossy display flags;
 textual path evidence omits them and reports the count.
 
+Candidate loading has separate operation-wide safety limits: at most 256 attempts
+and at most 64 MiB of conservatively reserved read allowance. Before each call to
+`source::load`, selection reserves `min(remaining content budget, per-file limit)
++ 1` bytes, matching the loader's maximum read including its over-limit probe.
+This allowance is charged even when metadata rejects a file before reading or a
+read fails early. If another reservation would exceed either cap, selection stops
+and human/JSON coverage reports the attempts, reserved bytes, safety truncation,
+and number of unattempted candidates. The public content budget still counts only
+selected UTF-8 bytes.
+
 A conservative escaped-size estimate runs before allocating output DTO collections
 or a human buffer. Both formats obey the shared 64 MiB materialization ceiling;
 JSON also uses the bounded serializer. Overflow fails before stdout. The estimate
@@ -139,35 +157,40 @@ The benchmark is the production-composition unit test
 cargo test --bin ctx expected_file_recall_benchmark -- --nocapture
 ```
 
-The fixture is authored inline beside the test: 16 files of exactly 128 bytes,
-including four implementation/test pairs, four path-matching migration-note
-distractors, and setup/protocol docs/config/schema pairs. Padding controls file
-cost rather than changing any baseline's eligibility or loading behavior.
-Each symbol task expects the implementation of that named operation and its
-local test harness; setup expects setup docs/config; protocol expects protocol
-docs/schema. Expected paths are literal fixture-authored values, not ranker output.
+The corrected fixture contains 22 files of exactly 128 bytes. It covers four
+source/test tasks in Rust and Python plus setup and protocol docs/config/schema
+tasks. Each source/test pair contains a source declaration and a test that imports
+and exercises it; the test does not define a duplicate task-named helper. Expected
+paths are literal values authored in the test. The test file itself has no task
+symbol match, which the benchmark asserts through the existing symbol-search API.
+It is expected because its path directly matches the task and its file role is
+useful. It is not presented as a graph-reached test or as coverage evidence.
 
-All strategies exclude the same generated/vendor roles and call the exact same
-production `select`/`source::load` path. Path order sorts eligible files canonically.
-Path-only uses production task normalization and `path_score`, sorts descending
-path score then native path, and includes zero-match files after lexical matches.
-The real ranker calls production `rank`; no shadow ranker exists.
+All five strategies use the same eligible-file policy, production
+`select`/`source::load` behavior, full-file packing and 256-byte budget. The
+pre-Phase-5 baseline uses the existing path-and-symbol `query::search` results
+mapped to owning files. Other baselines use canonical path order and path-only
+lexical scoring. A role-removed production ranking is also included as a
+mutation-style check that the measured incremental signal affects recall.
 
-| Task | Budget | Expected files | Ranker hits/recall | Path order hits/recall | Path-only hits/recall | Used bytes (all three) |
-| --- | ---: | --- | --- | --- | --- | ---: |
-| dispatch | 256 | src/router.rs; tests/router.rs | 2/2, 1.0 | 0/2, 0.0 | 0/2, 0.0 | 256 |
-| hydrate | 256 | src/storage.py; tests/test_storage.py | 2/2, 1.0 | 0/2, 0.0 | 0/2, 0.0 | 256 |
-| verify | 256 | src/check.rs; tests/check.rs | 2/2, 1.0 | 0/2, 0.0 | 0/2, 0.0 | 256 |
-| encode | 256 | src/codec.py; tests/test_codec.py | 2/2, 1.0 | 0/2, 0.0 | 0/2, 0.0 | 256 |
-| setup | 256 | docs/setup.md; config/setup.toml | 2/2, 1.0 | 0/2, 0.0 | 2/2, 1.0 | 256 |
-| protocol | 256 | docs/protocol.md; schema/protocol.json | 2/2, 1.0 | 0/2, 0.0 | 2/2, 1.0 | 256 |
-| **Aggregate** | | **12 expected files across six scenarios** | **12/12; macro 1.0** | **0/12; macro 0.0** | **4/12; macro 0.333333** | **1536 per strategy** |
+| Task | Expected files | Production | Existing path+symbol search | Path order | Path-only | Production without role | Bytes per strategy |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| cache | src/cache.py; tests/test_cache_contract.py | 2/2, 1.0 | 1/2, 0.5 | 0/2, 0.0 | 0/2, 0.0 | 2/2, 1.0 | 256 |
+| router | src/router.rs; tests/router_contract.rs | 2/2, 1.0 | 1/2, 0.5 | 0/2, 0.0 | 0/2, 0.0 | 2/2, 1.0 | 256 |
+| retry | src/retry.py; tests/test_retry_policy.py | 2/2, 1.0 | 1/2, 0.5 | 0/2, 0.0 | 0/2, 0.0 | 2/2, 1.0 | 256 |
+| codec | src/codec.rs; tests/codec_roundtrip.rs | 2/2, 1.0 | 1/2, 0.5 | 0/2, 0.0 | 0/2, 0.0 | 2/2, 1.0 | 256 |
+| setup | docs/setup.md; config/setup.toml | 2/2, 1.0 | 1/2, 0.5 | 0/2, 0.0 | 1/2, 0.5 | 1/2, 0.5 | 256 |
+| protocol | docs/protocol.md; schema/protocol.json | 2/2, 1.0 | 1/2, 0.5 | 0/2, 0.0 | 1/2, 0.5 | 1/2, 0.5 | 256 |
+| **Aggregate** | **12 files / six scenarios** | **12/12; macro 1.0** | **6/12; macro 0.5** | **0/12; macro 0.0** | **2/12; macro 0.166667** | **10/12; macro 0.833333** | **1536 per strategy** |
 
-Thus the production ranker beats both specified baselines on this fixed dataset.
-Graph distance and related-test components support the implementation/test pairs;
-path/role evidence handles docs/config/schema. These are small synthetic ranking
-fixtures, not a general claim about natural-language understanding or real-world
-retrieval quality. In particular, they do not establish cross-file graph recall.
+The corrected fixture supports a bounded claim: in these six authored scenarios,
+production ranking beats existing path-and-symbol search, path order, and
+path-only retrieval under identical byte budgets. Removing file-role scores drops
+recall from 1.0 to 0.833333, with both supporting-file scenarios losing one hit.
+It does **not** demonstrate cross-file graph retrieval:
+the current resolver supplies same-file relationships, and graph scores now
+require reaching a distinct file owner. These results are synthetic and do not
+establish broad natural-language or real-world retrieval quality.
 
 ## Verification actually run
 
@@ -209,20 +232,24 @@ Repeated JSON runs were byte-identical within each unchanged repository/scope.
 
 ## Adaptations and limits
 
-No weights or durable architecture/PRD intent changed. Three implementation choices
-refine the plan:
+The review-fix pass corrected seed-owner graph scoring and bounded selection work;
+details and verification are recorded in the linked review-fix report. Durable
+architecture and PRD intent remain unchanged. The current constraints are:
 
 1. Content reads are bounded by remaining bytes, so over-budget rejection precedes
    full UTF-8 validation instead of reading complete oversized files.
 2. With repository containment excluded, existing resolved graph edges are
-   confined to a single file. Consequently,
-   file-granular graph evidence currently supports seed-owner files; it cannot
-   discover independently related cross-file tests or source. Benchmark graph/test
-   scenarios exercise current syntax/owner evidence, not invented cross-file
-   binding. Depth-2 traversal, minimum owner distances and global limits remain
-   composed through the existing graph seam for any future supported relations.
+   confined to a single file. The review fix excludes the seed's own file from
+   graph evidence and requires a traversed relation to a distinct file owner.
+   Current data therefore supplies no cross-file graph boosts or related-test
+   candidates. The corrected benchmark exercises path, symbol and file-role
+   evidence and makes no graph-retrieval claim.
 
-3. A context-only bounded Git index check strengthens the existing metadata
+3. Candidate content loading reserves a separate operation-wide allowance before
+   calling the safe loader: at most 256 attempts and 64 MiB of potential read
+   bytes. Exact selected content bytes remain governed by the public budget.
+
+4. A context-only bounded Git index check strengthens the existing metadata
    probe: hidden index flags, unmerged entries and scoped submodules fail closed.
    Ordinary `diff`/`impact` and other metadata probe behavior remain unchanged.
 

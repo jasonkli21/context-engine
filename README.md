@@ -69,12 +69,14 @@ tokens; selected contents total at most the budget. Metadata/framing is outside
 that budget and subject to the separate 64 MiB output safety bound. A file that
 cannot fit is skipped, and smaller candidates are still considered.
 
-`file-ranker-v1` combines capped integer path, symbol, depth-2 graph, supporting
-file-role, optional change, and secondary centrality components. Each selected
-file reports its score, stable reasons, matched symbols, graph/change distances,
-rank, byte cost, and full content. A reached test is a **related test candidate**,
-not coverage. Docs/config/schema use direct lexical evidence. Graph resolution
-remains same-file syntax evidence; the repository containment hub is excluded.
+`file-ranker-v1` combines capped integer path, symbol, relationship, supporting
+file-role, optional change, and secondary centrality components. A graph score
+requires traversal to a distinct file owner; a seed's own file receives only its
+direct path, symbol, or change evidence. The current resolver has same-file
+relationships only, so it does not currently produce cross-file graph boosts.
+A directly matched test is labeled `direct_test_match`; `related_test_candidate`
+requires an independently reached test and is not coverage. Docs/config/schema
+use direct path and role evidence. The repository containment hub is excluded.
 Unrelated hotspots are excluded unless no lexical/change seeds exist, when an
 explicit centrality fallback ranks at most 20 files. Ordering is deterministic:
 total score, symbol, path, change, graph, centrality descending; native path ascending.
@@ -85,6 +87,10 @@ task, and reports truncation beyond 64 unique terms. Budgets accept 1 byte throu
 At most 200 files, 8 matched symbols per file, and 50 skip details are reported;
 omitted counts, root/traversal truncation, analysis gaps, and load failures remain
 explicit. Content reads are capped at the remaining budget (and 16 MiB per file).
+The selection operation also caps candidate loads at 256 attempts and reserves no
+more than 64 MiB of potential read bytes across all attempts. When either limit
+stops selection, human and JSON coverage report the reserved allowance and the
+number of candidates left unattempted.
 An over-budget file is not fully decoded, so its budget skip takes precedence over
 possible UTF-8 errors. Human source lines retain tabs and line breaks, escape
 other controls, and carry a visible `|` prefix. JSON retains raw decoded content.
@@ -98,10 +104,11 @@ Deleted-only entities supply no fabricated content. Invalid/incompatible request
 change evidence is a command error. Without `--change`, Git is optional and dirty
 filesystem content is allowed. This is not an atomic filesystem snapshot.
 
-The fixture-authored six-scenario recall benchmark compares the production ranker
-and packer against canonical path order and path-only lexical matching. See the
-[Phase 5 report](docs/reports/phase-5-implementation-report.md) for exact results,
-weights, and benchmark limitations.
+The six-scenario benchmark compares the production ranker and packer with the
+existing path-and-symbol search, path order, and path-only lexical ranking. Its
+test files match by path and role; they do not claim cross-file graph retrieval.
+The corrected results and limits are recorded in the
+[Phase 5 review-fix report](docs/reports/phase-5-review-fix-report.md).
 
 ### Committed structural changes
 

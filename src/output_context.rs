@@ -123,6 +123,10 @@ struct CoverageDto {
     graph_truncated: bool,
     fallback_candidates_omitted: usize,
     content_load_failures: usize,
+    content_load_attempts: usize,
+    content_load_bytes_reserved: u64,
+    content_load_safety_limited: bool,
+    content_load_candidates_omitted: usize,
     budget_skips: usize,
     skips_omitted: usize,
     reported_skips_truncated: bool,
@@ -146,6 +150,10 @@ fn coverage(g: &RepositoryGraph, t: &Task, b: &Bundle) -> CoverageDto {
         graph_truncated: b.ranking.graph_truncated,
         fallback_candidates_omitted: b.ranking.fallback_omitted,
         content_load_failures: b.load_failures,
+        content_load_attempts: b.load_attempts,
+        content_load_bytes_reserved: b.load_bytes_reserved,
+        content_load_safety_limited: b.load_safety_limited,
+        content_load_candidates_omitted: b.load_candidates_omitted,
         budget_skips: b.budget_skips,
         skips_omitted: b.skips_omitted,
         reported_skips_truncated: b.skips_omitted > 0,
@@ -275,7 +283,7 @@ pub fn human(
         writeln!(out,"Change: {} ({}..{}); files observed/mapped: {}/{}; symbols observed/mapped/unmapped: {}/{}/{}; deleted-only entities: {}", escape_controls(&c.range), c.base, c.head, c.files_observed,c.files.len(),c.symbols_observed,c.symbols_mapped,c.symbols_unmapped,c.deleted_only).unwrap();
     }
     let cv = coverage(g, t, b);
-    writeln!(out,"Coverage: files={} eligible={} excluded_roles={} terms={} terms_truncated={} non_utf8_path_omissions={} roots={} omitted_roots={} graph_truncated={} fallback_omitted={} load_failures={} budget_skips={} unreported_skips={} selection_omitted={}",cv.files_considered,cv.files_eligible,cv.excluded_roles,cv.task_terms,cv.task_terms_truncated,cv.lexical_non_utf8_path_omissions,cv.ranking_roots,cv.ranking_roots_omitted,cv.graph_truncated,cv.fallback_candidates_omitted,cv.content_load_failures,cv.budget_skips,cv.skips_omitted,cv.selection_candidates_omitted).unwrap();
+    writeln!(out,"Coverage: files={} eligible={} excluded_roles={} terms={} terms_truncated={} non_utf8_path_omissions={} roots={} omitted_roots={} graph_truncated={} fallback_omitted={} load_failures={} load_attempts={} load_bytes_reserved={} load_safety_limited={} load_candidates_omitted={} budget_skips={} unreported_skips={} selection_omitted={}",cv.files_considered,cv.files_eligible,cv.excluded_roles,cv.task_terms,cv.task_terms_truncated,cv.lexical_non_utf8_path_omissions,cv.ranking_roots,cv.ranking_roots_omitted,cv.graph_truncated,cv.fallback_candidates_omitted,cv.content_load_failures,cv.content_load_attempts,cv.content_load_bytes_reserved,cv.content_load_safety_limited,cv.content_load_candidates_omitted,cv.budget_skips,cv.skips_omitted,cv.selection_candidates_omitted).unwrap();
     for s in &b.selected {
         let f = &g.index.files[s.candidate.file];
         writeln!(
@@ -401,5 +409,41 @@ mod tests {
         assert_eq!(v["data"]["coverage"]["lexical_non_utf8_path_omissions"], 1);
         assert_eq!(v["data"]["fallback_mode"], "centrality");
         assert_eq!(v["data"]["skipped"][0]["path_lossy"], true);
+    }
+
+    #[test]
+    fn load_safety_budget_is_reported_in_both_formats() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("task.py"), "def task(): pass\n").unwrap();
+        let g = crate::graph::build(&crate::model::IndexOptions {
+            root: dir.path().into(),
+            max_parse_file_bytes: 100,
+            probe_git: false,
+        })
+        .unwrap();
+        let task = Task::parse("task").unwrap();
+        let mut bundle = select(&g, rank(&g, &task, None), 100);
+        bundle.load_attempts = 1;
+        bundle.load_bytes_reserved = 101;
+        bundle.load_safety_limited = true;
+        bundle.load_candidates_omitted = 3;
+
+        let json: serde_json::Value =
+            serde_json::from_str(&self::json(&g, &task, &bundle, None).unwrap()).unwrap();
+        assert_eq!(json["data"]["ranker_version"], RANKER_VERSION);
+        assert_eq!(json["data"]["coverage"]["content_load_attempts"], 1);
+        assert_eq!(json["data"]["coverage"]["content_load_bytes_reserved"], 101);
+        assert_eq!(
+            json["data"]["coverage"]["content_load_safety_limited"],
+            true
+        );
+        assert_eq!(
+            json["data"]["coverage"]["content_load_candidates_omitted"],
+            3
+        );
+
+        let human = self::human(&g, &task, &bundle, None).unwrap();
+        assert!(human.contains(&format!("Ranker: {RANKER_VERSION}")));
+        assert!(human.contains("load_attempts=1 load_bytes_reserved=101 load_safety_limited=true load_candidates_omitted=3"));
     }
 }

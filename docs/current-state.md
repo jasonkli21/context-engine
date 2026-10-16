@@ -4,24 +4,30 @@
 
 **Active phase:** Phase 5 — Task Context Ranking
 
-**Overall status:** Phase 5 implemented and locally verified; fresh independent review required
+**Overall status:** Phase 5 review fixes implemented and locally verified; fresh independent review required
 
 ## Delivered
 
 - Phase 5 `context [PATH] --task TASK --budget BYTES` assembles deterministic
-  full-file UTF-8 bundles with explicit `file-ranker-v1` integer scores/reasons,
+  full-file UTF-8 bundles with contract-tested `file-ranker-v1` scores/reasons,
   matched symbols, exact content-byte accounting and skip-and-continue packing.
-- Path/symbol relevance, existing depth-2 traversal, supporting test/doc/config/
-  schema evidence and capped secondary centrality reuse the current graph.
+- Path/symbol relevance, depth-2 traversal, supporting file-role evidence and
+  capped secondary centrality reuse the current graph. Graph scores exclude seed
+  ownership and require a distinct file owner; current same-file-only resolution
+  produces no cross-file graph boost or related-test candidate.
+- Candidate content loads are capped at 256 attempts and 64 MiB of conservative
+  read allowance, separate from selected-content bytes. Safety truncation and
+  unattempted candidates are reported in human and schema-v1 JSON.
   Explicit centrality fallback, root/traversal/explanation/selection omissions,
   analysis gaps and content failures are reported in human/schema-v1 JSON.
 - Optional `--change BASE..HEAD` requires known clean current HEAD matching the
   resolved range, rejects hidden index entries/scoped gitlinks, maps structural
   descriptors rather than numeric IDs, and rechecks compatibility after loading.
-- Six fixture-authored scenarios: expected-file macro recall 1.0 for production
-  ranking, 0.0 for path order, 0.333333 for path-only matching under identical
-  eligibility/loading/byte budgets. These synthetic fixtures do not establish
-  cross-file retrieval quality or general natural-language understanding.
+- Revised six-scenario benchmark: macro expected-file recall 1.0 for production,
+  0.5 for existing path-and-symbol search, 0.0 for path order, 0.166667 for
+  path-only, and 0.833333 with role scores removed. Each strategy uses the same
+  loader, packing and byte budget. This synthetic fixture does not establish
+  cross-file graph retrieval or general natural-language understanding.
 
 - Phase 4 `diff BASE..HEAD` and `impact BASE..HEAD` read bounded committed Git
   snapshots, resolve immutable commits, honor nested scopes, and ignore dirty
@@ -65,7 +71,8 @@
   text, record and output limits; explicit query root omission accounting;
   relation-file accounting alongside every file's Phase 1 analysis status.
 
-Evidence: [Phase 5 report](reports/phase-5-implementation-report.md),
+Evidence: [Phase 5 review-fix report](reports/phase-5-review-fix-report.md),
+[Phase 5 implementation report](reports/phase-5-implementation-report.md),
 [Phase 4 report](reports/phase-4-implementation-report.md),
 [Phase 3 report](reports/phase-3-implementation-report.md),
 [Phase 3 review-fix report](reports/phase-3-review-fix-report.md),
@@ -88,6 +95,14 @@ Evidence: [Phase 5 report](reports/phase-5-implementation-report.md),
   isolated toolchain. Both formats were checked on real Rust/Python repositories
   and a clean Git fixture; dirty/mismatched snapshots failed with empty stdout.
   Fresh independent Phase 5 review remains required.
+- The independent Phase 5 handoff findings are addressed in a follow-up: graph
+  seed ownership is no longer scored as graph evidence, content loads have
+  operation-wide caps, `file-ranker-v1` has a pinned contract, and the benchmark
+  includes existing path-and-symbol search. The canonical verifier passes with
+  71 unit / 56 integration tests; all-target check, release build, whitespace
+  check, human/JSON repository smokes, and clean Git `--change` smokes pass
+  locally. See the [Phase 5 review-fix report](reports/phase-5-review-fix-report.md).
+  Fresh independent re-review remains required; this is not Phase 5 acceptance.
 
 - The maintainer directly authorized Phase 4 from `865f5a4` while Phase 3 fresh
   re-review and Phase 1/2 final dispositions remain pending. Authorization does
@@ -136,14 +151,15 @@ Evidence: [Phase 5 report](reports/phase-5-implementation-report.md),
 
 ## Known limitations
 
-Phase 5 packs complete files under a byte budget, not tokens/snippets. With repository containment excluded,
-resolved graph edges stay within files, so graph boosts currently support seed
-owners rather than independently retrieving cross-file source/tests. Docs use
-path/role evidence; tests are related candidates, not coverage. No atomic filesystem
-snapshot is promised. `--change` uses conservative Git cleanliness metadata and
-rejects hidden index flags/submodules within scope. Content reads stop at remaining
-bytes; over-budget files may be skipped before UTF-8 validation. Conservative
-64 MiB output preflight can reject a large otherwise-renderable bundle.
+Phase 5 packs complete files under a byte budget, not tokens/snippets. With
+repository containment excluded, resolved graph edges stay within files. Ranking
+does not score a seed's own file as graph evidence and currently has no distinct
+cross-file graph candidates. Directly matched tests are not coverage. No atomic
+filesystem snapshot is promised. `--change` uses conservative Git cleanliness
+metadata and rejects hidden index flags/submodules within scope. Content loads
+reserve at most 64 MiB across 256 attempts; over-budget files may be skipped
+before UTF-8 validation. Conservative 64 MiB output preflight can reject a large
+otherwise-renderable bundle.
 
 Phase 4 is committed two-dot comparison only, with no working-tree/triple-dot,
 compiler-grade impact, symbol-rename lineage or cross-file binding. Diff analyzes
