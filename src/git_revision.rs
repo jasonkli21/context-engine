@@ -135,7 +135,7 @@ impl Entry {
         matches!(self.mode.as_str(), "100644" | "100755")
     }
 }
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct FileChange {
     pub status: String,
     pub similarity: Option<u8>,
@@ -204,31 +204,62 @@ impl Revisions {
         })
     }
     pub fn changes(&self, limits: Limits) -> Result<Vec<FileChange>, Error> {
-        let out = run(
-            &self.root,
-            &[
-                "-c",
-                "diff.renameLimit=10000",
-                "-c",
-                "diff.algorithm=myers",
-                "diff-tree",
-                "-r",
-                "--raw",
-                "-z",
-                "--no-commit-id",
-                "--no-abbrev",
-                "--find-renames=50%",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--ignore-submodules=none",
-                &self.base,
-                &self.head,
-                "--",
-            ],
-            limits.diff_bytes,
-            "raw diff bytes",
-        )?;
+        Ok(self.changes_inner(limits, false)?.0)
+    }
+    /// Usage is measured before scope filtering so unrelated changes cannot
+    /// multiply a per-diff ceiling across a history walk.
+    pub(crate) fn changes_with_usage(
+        &self,
+        limits: Limits,
+    ) -> Result<(Vec<FileChange>, [usize; 3]), Error> {
+        self.changes_inner(limits, true)
+    }
+    fn changes_inner(
+        &self,
+        limits: Limits,
+        history: bool,
+    ) -> Result<(Vec<FileChange>, [usize; 3]), Error> {
+        let mut args = vec![
+            "-c",
+            "diff.renameLimit=10000",
+            "-c",
+            "diff.algorithm=myers",
+            "diff-tree",
+            "-r",
+            "--raw",
+            "-z",
+            "--no-commit-id",
+            "--no-abbrev",
+            "--find-renames=50%",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--ignore-submodules=none",
+        ];
+        if self.base.is_empty() {
+            args.extend(["--root", &self.head, "--"]);
+        } else {
+            args.extend([&self.base, &self.head, "--"]);
+        }
+        let out = run(&self.root, &args, limits.diff_bytes, "raw diff bytes")?;
         let mut changes = parse_diff(&out, limits)?;
+        let usage = [
+            changes.len(),
+            changes
+                .iter()
+                .map(|c| {
+                    // parse_diff accounts both path slots, including non-renames.
+                    c.before
+                        .as_ref()
+                        .or(c.after.as_ref())
+                        .map_or(0, |e| e.path.as_os_str().len())
+                        + c.after
+                            .as_ref()
+                            .or(c.before.as_ref())
+                            .map_or(0, |e| e.path.as_os_str().len())
+                })
+                .sum(),
+            out.len(),
+        ];
         for change in &mut changes {
             for side in [&mut change.before, &mut change.after] {
                 if let Some(e) = side {
@@ -240,12 +271,26 @@ impl Revisions {
                 }
             }
             if change.before.is_none() {
-                change.status = "added".into();
-                change.similarity = None;
+                change.status = if history && change.similarity.is_some() {
+                    "entered_scope"
+                } else {
+                    "added"
+                }
+                .into();
+                if !history {
+                    change.similarity = None;
+                }
             }
             if change.after.is_none() {
-                change.status = "deleted".into();
-                change.similarity = None;
+                change.status = if history && change.similarity.is_some() {
+                    "left_scope"
+                } else {
+                    "deleted"
+                }
+                .into();
+                if !history {
+                    change.similarity = None;
+                }
             }
         }
         changes.retain(|c| c.before.is_some() || c.after.is_some());
@@ -257,7 +302,88 @@ impl Revisions {
                 .path
                 .cmp(&b.before.as_ref().or(b.after.as_ref()).unwrap().path)
         });
-        Ok(changes)
+        Ok((changes, usage))
+    }
+    /// Git walk order is authoritative; timestamps are metadata only.
+    pub(crate) fn commits(&self, max: usize, metadata_bytes: usize) -> Result<Vec<Commit>, Error> {
+        // Shallow/grafted boundaries are not immutable root-commit evidence.
+        if run(
+            &self.root,
+            &["rev-parse", "--is-shallow-repository"],
+            16,
+            "shallow history check",
+        )? != b"false\n"
+        {
+            return Err(Error::Git(
+                "history requires a complete, non-shallow repository",
+            ));
+        }
+        let mut graft_path = run(
+            &self.root,
+            &[
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-path",
+                "info/grafts",
+            ],
+            64 * 1024,
+            "history graft check",
+        )?;
+        if graft_path.last() == Some(&b'\n') {
+            graft_path.pop();
+        }
+        #[cfg(unix)]
+        let graft_path = {
+            use std::os::unix::ffi::OsStringExt;
+            PathBuf::from(OsString::from_vec(graft_path))
+        };
+        #[cfg(not(unix))]
+        let graft_path = PathBuf::from(text(&graft_path)?);
+        match std::fs::symlink_metadata(graft_path) {
+            Ok(_) => return Err(Error::Git("history does not support grafted ancestry")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        let out = run(
+            &self.root,
+            &[
+                "log",
+                "--first-parent",
+                "--no-show-signature",
+                "--no-decorate",
+                "-z",
+                "--format=%H%x00%P%x00%ct%x00%s",
+                &format!("--max-count={}", max + 1),
+                &self.head,
+                "--",
+            ],
+            metadata_bytes,
+            "history metadata bytes",
+        )?;
+        let commits = parse_commits(&out)?;
+        let mut remaining = metadata_bytes.saturating_sub(out.len());
+        // Verify claimed roots against immutable object headers as well. A live
+        // shallow/graft metadata change during enumeration cannot fabricate a root.
+        for commit in commits.iter().filter(|c| c.first_parent.is_none()) {
+            let raw = run(
+                &self.root,
+                &["cat-file", "commit", &commit.oid],
+                remaining,
+                "history root metadata",
+            )?;
+            remaining = remaining.saturating_sub(raw.len());
+            if raw
+                .split(|b| *b == b'\n')
+                .take_while(|line| !line.is_empty())
+                .any(|line| line.starts_with(b"parent "))
+            {
+                return Err(Error::Git("incomplete history ancestry boundary"));
+            }
+        }
+        if commits.is_empty() {
+            return Err(Error::Git("empty committed history"));
+        }
+        Ok(commits)
     }
     pub fn inventory(&self, commit: &str, limits: Limits) -> Result<Vec<Entry>, Error> {
         let mut c = command(&self.root);
@@ -283,6 +409,38 @@ impl Revisions {
             "blob bytes",
         )
     }
+}
+#[derive(Clone, Debug)]
+pub struct Commit {
+    pub oid: String,
+    pub first_parent: Option<String>,
+    pub committer_timestamp: i64,
+    pub subject: String,
+}
+fn parse_commits(bytes: &[u8]) -> Result<Vec<Commit>, Error> {
+    let f = fields(bytes)?;
+    if f.len() % 4 != 0 {
+        return Err(Error::Git("history records"));
+    }
+    f.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|r| {
+            let id = text(r[0])?;
+            let parents: Vec<_> = text(r[1])?.split_whitespace().collect();
+            if !oid(id) || parents.iter().any(|p| !oid(p)) {
+                return Err(Error::Git("history commit identity"));
+            }
+            Ok(Commit {
+                oid: id.into(),
+                first_parent: parents.first().map(|p| (*p).into()),
+                committer_timestamp: text(r[2])?
+                    .parse()
+                    .map_err(|_| Error::Git("history timestamp"))?,
+                subject: String::from_utf8_lossy(r[3]).into_owned(),
+            })
+        })
+        .collect()
 }
 fn fields(bytes: &[u8]) -> Result<Vec<&[u8]>, Error> {
     if bytes.is_empty() {
@@ -453,6 +611,24 @@ pub fn validate_context_index(scope: &Path) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn history_metadata_is_typed_bounded_and_not_timestamp_sorted() {
+        let id = "a".repeat(40);
+        let parent = "b".repeat(40);
+        let bytes = format!(
+            "{id}\0{parent} {}\0-10\0hostile\x1b[31m\0{parent}\0\0999\0root\0",
+            "c".repeat(40)
+        );
+        let c = parse_commits(bytes.as_bytes()).unwrap();
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0].oid, id);
+        assert_eq!(c[0].first_parent.as_deref(), Some(parent.as_str()));
+        assert_eq!(c[0].committer_timestamp, -10);
+        assert!(c[1].first_parent.is_none());
+        for bad in [b"bad\0".as_slice(), b"bad\0\x000\0text\0", b"no terminator"] {
+            assert!(parse_commits(bad).is_err());
+        }
+    }
     #[test]
     fn explicit_range_grammar_and_exact_text_budget() {
         for valid in ["main..HEAD", "HEAD~1..v1.0", "a^{commit}..b"] {

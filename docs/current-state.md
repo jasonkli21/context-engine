@@ -2,11 +2,22 @@
 
 **Last updated:** 2026-10-16
 
-**Active phase:** Phase 7 — Incremental Indexing
+**Active phase:** Phase 8 — History and Evolution Intelligence
 
-**Overall status:** Phase 7 review findings addressed and locally verified; fresh independent re-review required
+**Overall status:** Phase 8 implemented and locally verified; fresh independent review required
 
 ## Delivered
+
+- Phase 8 `history SYMBOL [PATH]` resolves committed HEAD symbols and follows
+  bounded first-parent, exact-descriptor file lineage through Git rename evidence.
+  `evolution TARGET --repo PATH` aggregates historical file/directory changes,
+  available symbol/relation deltas and scoped same-commit co-change evidence.
+- Shared Phase 4 snapshots/comparisons serve both commands. Dirty source and the
+  current SQLite cache are excluded. Metadata, diff/path/source, structural work,
+  event text, retention and output have command-wide bounds; commit-window
+  truncation and coverage gaps are explicit. Ambiguous/unavailable lineage stops;
+  shallow/grafted histories are rejected. Schema/compatibility/freshness unchanged.
+  Evidence: [Phase 8 report](reports/phase-8-implementation-report.md).
 
 - Phase 7 automatically reconciles trusted stale snapshots by native path and
   file-input stamp. Only changed/new eligible files are parsed; deleted groups
@@ -117,6 +128,11 @@ Evidence: [Phase 5 review-fix report](reports/phase-5-review-fix-report.md),
 
 ## Acceptance and verification
 
+- The maintainer directly authorized Phase 8 from `ef44712` despite earlier pending
+  reviews. Local canonical verification and real-repository smoke evidence are
+  recorded in the [Phase 8 report](reports/phase-8-implementation-report.md).
+  Fresh independent Phase 8 review is required; no earlier phase is accepted here.
+
 - The Phase 7 independent-review handoff findings are addressed in one follow-up
   commit. Its canonical verifier passed with 99 unit / 61 integration tests. Fresh
   independent re-review remains required; this does not accept Phase 7. See the
@@ -206,6 +222,15 @@ Evidence: [Phase 5 review-fix report](reports/phase-5-review-fix-report.md),
 
 ## Known limitations
 
+Phase 8 uses a bounded first-parent window and exact current-HEAD descriptors;
+full-DAG lineage, deleted-symbol lookup, symbol renames/moves, historical centrality
+and historical persistence remain absent. HEAD lookup analyzes its scoped committed
+inventory; older comparisons analyze selected file pairs. Git rename classification
+uses the existing fixed 50% similarity policy. Evolution selectors retain their path
+rather than follow file lineage. Coverage gaps and hard resource failures remain
+explicit; co-change is only scoped commit co-occurrence. No Linux/Windows or
+independent Phase 8 execution is claimed.
+
 Phase 7 still scans and reads eligible source bytes on each request. Freshness
 reserves at most 256 MiB per pass; stores have additional size/record limits.
 If source freshness cannot be established, automatic current-state queries bypass
@@ -255,7 +280,8 @@ filesystem TOCTOU races remain; results are not atomic snapshots.
 
 ## Next step
 
-Fresh independent Phase 7 review of incremental storage, freshness, races, watcher
+Fresh independent Phase 8 review of immutable history, lineage, scope, bounds and
+production integration. Fresh independent Phase 7 review of incremental storage, freshness, races, watcher
 ownership and integration. Phase 6 fresh re-review remains pending.
 Phase 5 fresh re-review remains required. Phase 4 and Phase 3 fixes still require
 fresh independent re-review; Phase 1/2 final independent dispositions also remain

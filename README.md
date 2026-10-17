@@ -12,14 +12,16 @@ The project is intentionally **descriptive rather than normative**. It aims to m
 
 ## Status
 
-**Pre-alpha / Phase 7 implemented; fresh independent review pending.**
+**Pre-alpha / Phase 8 implemented; fresh independent review pending.**
 The synchronous CLI scans repositories, indexes Rust/Python symbols, and builds a
 canonical in-memory graph of lexical containment, imports and call-site references,
 incrementally reconciling a validated external analysis cache after fresh inventory/content checks.
 `ctx watch` keeps that cache current in a foreground process, including changes to
 parent `.gitignore` and `.ignore` controls for nested scan roots, with a bounded
 60-second reconciliation safety net for missed backend events.
-Phase 6 review findings have been addressed in a single follow-up commit; independent
+`history` and `evolution` inspect bounded committed first-parent history without
+reading checkout source or changing the current-state cache.
+Phase 7 and Phase 6 review findings have been addressed in a single follow-up commit; independent
 re-review and earlier pending phase dispositions remain pending. Phase 0 was accepted
 on 2026-10-14. Async, MCP, embeddings and model calls remain future work.
 
@@ -52,12 +54,16 @@ cargo build --release
 ./target/release/ctx hotspots . --limit 10
 ./target/release/ctx diff HEAD~1..HEAD . --format json
 ./target/release/ctx impact HEAD~1..HEAD . --depth 2
+./target/release/ctx history RepositoryScan . --file src/model.rs
+./target/release/ctx history snapshot . --max-commits 32 --format json
+./target/release/ctx evolution src --repo . --max-commits 32 --format json
 ./target/release/ctx context . --task "context ranking" --budget 24000
 ./target/release/ctx context . --task "context ranking" --budget 24000 --format json
 ./target/release/ctx context . --task "changed methods" --budget 24000 --change HEAD~1..HEAD
 ```
 
-All commands default to the current directory and accept `--format human|json`.
+Query commands default to the current directory and accept `--format human|json`.
+`watch` emits operational status only on stderr.
 `scan` and `stats` also accept `--no-lines` and `--max-line-file-size <bytes>`
 (default 1 MiB). Current-state intelligence commands perform a fresh inventory and
 source-freshness validation, then reuse parser/extraction analysis on a valid cache
@@ -66,6 +72,33 @@ objects. `scan` shows an overview;
 `stats` adds per-language byte and line totals; `tree` lists alphabetically ordered
 relative paths, with `/` suffixes for directories. Tree does not read file contents
 or probe Git. Help and version: `ctx --help`, `ctx scan --help`, `ctx --version`.
+
+### Committed history and evolution
+
+`history SYMBOL [PATH] [--file RELATIVE_FILE]` resolves a unique symbol at committed
+HEAD (exact qualified name, then exact local name, then the file filter). It walks
+first-parent commits newest first, compares a merge with its first parent, and
+follows Git file-rename evidence when exact language/kind/qualified-name continuity
+is unique. Source-slice changes, introductions, renames and unavailable/ambiguous
+boundaries are explicit. A rename event also reports whether the tracked symbol
+changed. There is no cross-file symbol-move inference or global symbol identity.
+
+`evolution TARGET [--repo PATH]` reports Git file changes, aggregate file/symbol/
+relation counts from available comparisons, coverage gaps and same-commit co-change
+paths. Targets are lexical paths relative to the requested scope; deleted paths
+are supported, and `.` selects all descendants. Directory results aggregate file
+events rather than infer directory identity. A file selector follows that path's
+changes, including renames entering/leaving it; only `history` tracks file lineage.
+
+Both commands accept `--max-commits` (default 128, range 1–512) and
+`--max-parse-file-size`. The commit window reports truncation; hard command-wide
+resource limits fail clearly. Unsupported/oversized/invalid/syntax-damaged source
+retains Git facts with structural coverage gaps. Shallow repositories and grafted
+ancestry are rejected. Dirty checkout source has no effect. Historical queries
+read immutable Git objects, do not execute repository code, and never access the
+current SQLite cache. JSON uses schema v1. Co-change is scoped commit occurrence,
+with an inspected target-event-commit denominator, not dependency or test coverage.
+See the [Phase 8 report](docs/reports/phase-8-implementation-report.md) for bounds.
 
 ### Task context bundles
 

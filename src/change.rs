@@ -17,6 +17,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 pub struct Snapshot {
     pub graph: RepositoryGraph,
     texts: BTreeMap<PathBuf, String>,
+    pub(crate) source_bytes: u64,
     symbols_by_file: BTreeMap<PathBuf, Vec<usize>>,
     symbol_names: Vec<Rc<str>>,
     relations_by_file: BTreeMap<PathBuf, Vec<usize>>,
@@ -222,7 +223,7 @@ fn impact(set: &ChangeSet, depth: u8, limits: TraversalLimits) -> Impact {
     }
 }
 
-fn snapshot(
+pub(crate) fn snapshot(
     r: &Revisions,
     commit: &str,
     entries: Vec<Entry>,
@@ -316,6 +317,7 @@ fn snapshot(
         .map(|s| Rc::from(s.qualified_name.as_str()))
         .collect();
     Ok(Snapshot {
+        source_bytes: bytes,
         symbol_names,
         graph,
         texts,
@@ -356,7 +358,7 @@ pub fn relation_analysis<'a>(s: &'a Snapshot, e: &Entry) -> Option<&'a RelationF
         .ok()
         .map(|i| &s.graph.relation_files[i])
 }
-fn usable(s: &Snapshot, e: Option<&Entry>) -> bool {
+pub(crate) fn usable(s: &Snapshot, e: Option<&Entry>) -> bool {
     e.is_none()
         || file_analysis(s, e)
             .is_some_and(|f| f.status == AnalysisStatus::Analyzed && f.syntax_error_count == 0)
@@ -368,7 +370,7 @@ fn relation_usable(s: &Snapshot, e: Option<&Entry>) -> bool {
         })
 }
 
-fn compare_file(git: FileChange, base: &Snapshot, head: &Snapshot) -> ChangedFile {
+pub(crate) fn compare_file(git: FileChange, base: &Snapshot, head: &Snapshot) -> ChangedFile {
     let comparison_available =
         usable(base, git.before.as_ref()) && usable(head, git.after.as_ref());
     let mut result = ChangedFile {

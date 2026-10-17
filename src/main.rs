@@ -4,6 +4,7 @@ mod cli;
 mod context;
 mod git;
 mod graph;
+mod history;
 mod index;
 mod language;
 mod model;
@@ -30,6 +31,31 @@ use std::{
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let rendered = match cli.command {
+        Command::History(args) => {
+            let result = history::history(
+                &args.analysis.path,
+                &args.name,
+                args.file.as_deref(),
+                args.max_commits as usize,
+                args.analysis.max_parse_file_size,
+            )?;
+            match args.analysis.format {
+                Format::Human => output::history::human("history", &result)?,
+                Format::Json => output::history::json("history", &result)?,
+            }
+        }
+        Command::Evolution(args) => {
+            let result = history::evolution(
+                &args.repo,
+                &args.target,
+                args.max_commits as usize,
+                args.max_parse_file_size,
+            )?;
+            match args.format {
+                Format::Human => output::history::human("evolution", &result)?,
+                Format::Json => output::history::json("evolution", &result)?,
+            }
+        }
         Command::Watch(args) => return watch_command(args),
         Command::Context(args) => context_command(args)?,
         Command::Diff(args) => change_command("diff", args, None)?,

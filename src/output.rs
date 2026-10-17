@@ -422,3 +422,6 @@ pub mod change;
 
 #[path = "output_context.rs"]
 pub mod context;
+
+#[path = "output_history.rs"]
+pub mod history;

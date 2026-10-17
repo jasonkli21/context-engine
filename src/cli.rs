@@ -17,6 +17,10 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Trace a committed HEAD symbol through bounded first-parent history.
+    History(HistoryArgs),
+    /// Summarize a historical path over bounded first-parent history.
+    Evolution(EvolutionArgs),
     /// Assemble explainable full-file context under a UTF-8 content-byte budget.
     Context(ContextArgs),
     /// Compare structure in two committed revisions.
@@ -200,4 +204,28 @@ pub struct WatchArgs {
     /// Maximum bytes per source file eligible for parsing.
     #[arg(long, default_value_t = crate::model::DEFAULT_MAX_PARSE_BYTES)]
     pub max_parse_file_size: u64,
+}
+
+#[derive(Debug, Args)]
+pub struct HistoryArgs {
+    pub name: String,
+    #[command(flatten)]
+    pub analysis: AnalysisArgs,
+    #[arg(long)]
+    pub file: Option<PathBuf>,
+    #[arg(long, default_value_t = 128, value_parser = clap::value_parser!(u16).range(1..=512))]
+    pub max_commits: u16,
+}
+#[derive(Debug, Args)]
+pub struct EvolutionArgs {
+    /// Historical scan-root-relative file/directory selector; need not exist.
+    pub target: PathBuf,
+    #[arg(long, default_value = ".")]
+    pub repo: PathBuf,
+    #[arg(long, default_value_t = 128, value_parser = clap::value_parser!(u16).range(1..=512))]
+    pub max_commits: u16,
+    #[arg(long, default_value_t = crate::model::DEFAULT_MAX_PARSE_BYTES)]
+    pub max_parse_file_size: u64,
+    #[arg(long, value_enum, default_value = "human")]
+    pub format: Format,
 }

@@ -266,7 +266,9 @@ ctx scan ./backend
 
 should inspect `backend`, even if Git discovers a parent repository root.
 
-Phase 1+ symbol identity should initially be revision-scoped. Do not promise stable identity through rename/refactor until lineage support exists.
+Symbol IDs remain revision-scoped. Phase 8 follows only unique exact descriptors
+through Git file-rename evidence; this does not establish global identity through
+symbol renames, arbitrary moves or refactors.
 
 ---
 
@@ -623,30 +625,43 @@ there is no streaming machine contract. Freshness/write failures preserve the pr
 committed generation. Normal process termination is sufficient.
 
 Historical caches, full-text search, parallel parsers, async and service protocols
-remain deferred. Phase 8 history, Phase 9 service/adapters and Phase 11 evidence
-exports remain separate milestones.
+remain deferred. Phase 8 on-demand history is separate from current-state storage;
+Phase 9 service/adapters and Phase 11 evidence exports remain future milestones.
 
 ---
 
-## 21. Future Git/change intelligence
+## 21. Immutable revision and history intelligence
 
-Structural change analysis should eventually compare entity models across base/head revisions:
+`git_revision.rs` owns hardened, bounded read-only Git commands: commit resolution,
+raw file/rename deltas, tree inventory, blob reads and first-parent metadata walks.
+No checkout, filter/textconv/external diff, project-code execution or historical
+working tree is used. Replace objects and lazy fetch are disabled; inherited
+`GIT_*` variables are removed. Shallow/grafted ancestry is rejected by history.
 
-```text
-Git diff
-   ↓
-changed files
-   ↓
-base/head analyses
-   ↓
-entity matching
-   ↓
-symbol/relation changes
-   ↓
-impact traversal
-```
+`change.rs` builds selected revision snapshots through the shared classifier,
+`index::analyze_loaded` and canonical graph constructor. The shared snapshot and
+file-comparison seam serves `diff`, `impact` and Phase 8. It compares unique exact
+kind/qualified-name keys by source slice and relation occurrence multisets, with
+fail-closed symbol/relation coverage. Numeric IDs remain snapshot-local.
 
-Phase 0 Git metadata is only a thin foundation and must not prematurely encode the future diff model.
+`history.rs` owns on-demand first-parent walks from resolved committed HEAD.
+Merges compare their result with the first parent. History seeds a unique committed
+symbol and selectively compares its file, following Git file renames only while
+language/kind/qualified-name continuity remains unique. Ambiguous/unavailable
+boundaries stop introduction claims; crossing a nested scope is such a boundary.
+Evolution selects historical paths lexically and aggregates matching file events,
+including deleted paths and renames crossing a selector, without directory identity.
+Co-change counts unique other scoped paths in target-event commits and never means
+dependency, causality or test coverage. Event order follows Git, not timestamps.
+
+A plain command-owned budget covers metadata, unscoped raw diffs/paths, historical
+source bytes, analyzed entries, structural records/comparisons, events/event text
+and co-change retention. Public commit limits default to 128 with a hard maximum
+of 512. Window exhaustion returns explicit truncation; hard resource exhaustion
+fails. Output uses explicit schema-v1 DTOs and conservative preflight plus bounded
+serialization. Renderers never call Git or read files. History has no SQLite/cache
+access and leaves schema v3, compatibility v1 and freshness-v2 unchanged. Historical
+persistence, full-DAG lineage and historical centrality remain deferred.
 
 ---
 
