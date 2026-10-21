@@ -1,12 +1,14 @@
-//! Explicit schema-v1 history DTOs. Rendering never reads repository state.
+//! Explicit schema-v2 history DTOs. Rendering never reads repository state.
 use super::{Envelope, bounded_json, escape_controls, relative};
 use crate::history::{Descriptor, HistoryResult};
 use serde::Serialize;
+use std::path::Path;
 
 const MAX_OUTPUT: usize = 16 * 1024 * 1024;
 #[derive(Serialize)]
 struct SymbolDto<'a> {
     path: String,
+    native_path_identity: Option<NativePathIdentity>,
     language: &'a str,
     kind: &'a str,
     qualified_name: &'a str,
@@ -14,6 +16,7 @@ struct SymbolDto<'a> {
 fn symbol(d: &Descriptor) -> SymbolDto<'_> {
     SymbolDto {
         path: relative(&d.path),
+        native_path_identity: native_path_identity(&d.path),
         language: &d.language,
         kind: d.kind,
         qualified_name: &d.qualified_name,
@@ -23,6 +26,7 @@ fn symbol(d: &Descriptor) -> SymbolDto<'_> {
 struct EntryDto<'a> {
     path: String,
     path_is_utf8: bool,
+    native_path_identity: Option<NativePathIdentity>,
     mode: &'a str,
     blob_oid: &'a str,
 }
@@ -30,6 +34,7 @@ fn entry(e: &crate::git::revision::Entry) -> EntryDto<'_> {
     EntryDto {
         path: relative(&e.path),
         path_is_utf8: e.path.to_str().is_some(),
+        native_path_identity: native_path_identity(&e.path),
         mode: &e.mode,
         blob_oid: &e.oid,
     }
@@ -37,10 +42,11 @@ fn entry(e: &crate::git::revision::Entry) -> EntryDto<'_> {
 #[derive(Serialize)]
 struct StructuralDto {
     comparison_available: bool,
+    symbol_delta_complete: bool,
     relation_comparison_available: bool,
-    symbols_added: usize,
-    symbols_removed: usize,
-    symbols_modified: usize,
+    observed_symbols_added: usize,
+    observed_symbols_removed: usize,
+    observed_symbols_modified: usize,
     relations_added: usize,
     relations_removed: usize,
     ambiguous_keys: usize,
@@ -59,12 +65,49 @@ struct EventDto<'a> {
     structural: StructuralDto,
     coverage_gap: Option<&'a str>,
     lineage_symbol_modified: Option<bool>,
+    origin_scope: Option<&'a str>,
+    cross_file_origin_unknown: bool,
 }
 #[derive(Serialize)]
 struct CochangeDto {
     path: String,
     path_is_utf8: bool,
+    native_path_identity: Option<NativePathIdentity>,
     cochange_commit_count: usize,
+}
+#[derive(Serialize)]
+struct NativePathIdentity {
+    encoding: &'static str,
+    hex: String,
+}
+fn native_path_identity(path: &Path) -> Option<NativePathIdentity> {
+    #[cfg(unix)]
+    let (encoding, bytes): (&str, Vec<u8>) = {
+        use std::os::unix::ffi::OsStrExt;
+        ("unix_bytes", path.as_os_str().as_bytes().to_vec())
+    };
+    #[cfg(windows)]
+    let (encoding, bytes): (&str, Vec<u8>) = {
+        use std::os::windows::ffi::OsStrExt;
+        (
+            "windows_utf16le",
+            path.as_os_str()
+                .encode_wide()
+                .flat_map(u16::to_le_bytes)
+                .collect(),
+        )
+    };
+    #[cfg(not(any(unix, windows)))]
+    return None;
+    #[cfg(any(unix, windows))]
+    {
+        use std::fmt::Write as _;
+        let mut hex = String::with_capacity(bytes.len().saturating_mul(2));
+        for byte in bytes {
+            write!(hex, "{byte:02x}").expect("writing to String cannot fail");
+        }
+        Some(NativePathIdentity { encoding, hex })
+    }
 }
 #[derive(Serialize)]
 struct CoverageDto {
@@ -74,31 +117,49 @@ struct CoverageDto {
     structural_comparisons_available: usize,
     relation_comparisons_available: usize,
     coverage_gaps: usize,
-    head_analysis_gaps: usize,
+    head_supported_source_gaps: usize,
+    head_expected_exclusions: usize,
+    head_lookup_scope: Option<&'static str>,
+    head_resolution_complete: Option<bool>,
     history_truncated: bool,
-    lineage_complete_to_introduction: bool,
+    history_stop_reason: Option<&'static str>,
+    lineage_origin_scope: Option<&'static str>,
     cochanges_omitted: usize,
 }
 #[derive(Default, Serialize)]
 struct TotalsDto {
     file_change_counts: std::collections::BTreeMap<String, usize>,
-    symbols_added: usize,
-    symbols_removed: usize,
-    symbols_modified: usize,
+    observed_symbols_added: usize,
+    observed_symbols_removed: usize,
+    observed_symbols_modified: usize,
+    symbol_deltas_complete: bool,
+    symbol_delta_incomplete_files: usize,
+    ambiguous_symbol_keys_omitted: usize,
     relations_added: usize,
     relations_removed: usize,
+    relation_deltas_complete: bool,
+    relation_delta_incomplete_files: usize,
 }
 fn totals(r: &HistoryResult) -> TotalsDto {
-    let mut t = TotalsDto::default();
+    let mut t = TotalsDto {
+        symbol_deltas_complete: true,
+        relation_deltas_complete: true,
+        ..TotalsDto::default()
+    };
     for e in &r.events {
         *t.file_change_counts
             .entry(e.git.status.clone())
             .or_default() += 1;
-        t.symbols_added += e.structural.added;
-        t.symbols_removed += e.structural.removed;
-        t.symbols_modified += e.structural.modified;
+        t.observed_symbols_added += e.structural.added;
+        t.observed_symbols_removed += e.structural.removed;
+        t.observed_symbols_modified += e.structural.modified;
+        t.symbol_deltas_complete &= e.structural.symbol_delta_complete;
+        t.symbol_delta_incomplete_files += usize::from(!e.structural.symbol_delta_complete);
+        t.ambiguous_symbol_keys_omitted += e.structural.ambiguous_keys;
         t.relations_added += e.structural.relations_added;
         t.relations_removed += e.structural.relations_removed;
+        t.relation_deltas_complete &= e.structural.relations_available;
+        t.relation_delta_incomplete_files += usize::from(!e.structural.relations_available);
     }
     t
 }
@@ -113,6 +174,7 @@ struct DataDto<'a> {
     structural_derivation: &'static str,
     analysis_compat_version: i64,
     target: String,
+    target_native_path_identity: Option<NativePathIdentity>,
     symbol: Option<SymbolDto<'a>>,
     events: Vec<EventDto<'a>>,
     reported_event_file_totals: TotalsDto,
@@ -159,7 +221,7 @@ pub fn json(command: &str, r: &HistoryResult) -> Result<String, serde_json::Erro
         start_revision: &r.start_revision,
         history_policy: "first_parent",
         event_order: "newest_first_git_walk",
-        lineage_rule: "unique_exact_language_kind_qualified_name_in_file_pair; follow_git_file_renames_only",
+        lineage_rule: "history: unique_exact_language_kind_qualified_name_in_file_pair; follow_git_file_renames_only; path_lineage_start_does_not_prove_global_symbol_origin; evolution: fixed_path_selector",
         structural_derivation: "shared_revision_syntax_analysis_and_source_slice_comparison",
         analysis_compat_version: crate::persistence::INDEX_COMPAT_VERSION,
         target: if r.target.as_os_str().is_empty() {
@@ -167,6 +229,7 @@ pub fn json(command: &str, r: &HistoryResult) -> Result<String, serde_json::Erro
         } else {
             relative(&r.target)
         },
+        target_native_path_identity: native_path_identity(&r.target),
         symbol: r.symbol.as_ref().map(symbol),
         events: r
             .events
@@ -183,16 +246,19 @@ pub fn json(command: &str, r: &HistoryResult) -> Result<String, serde_json::Erro
                 after: e.git.after.as_ref().map(entry),
                 structural: StructuralDto {
                     comparison_available: e.structural.available,
+                    symbol_delta_complete: e.structural.symbol_delta_complete,
                     relation_comparison_available: e.structural.relations_available,
-                    symbols_added: e.structural.added,
-                    symbols_removed: e.structural.removed,
-                    symbols_modified: e.structural.modified,
+                    observed_symbols_added: e.structural.added,
+                    observed_symbols_removed: e.structural.removed,
+                    observed_symbols_modified: e.structural.modified,
                     relations_added: e.structural.relations_added,
                     relations_removed: e.structural.relations_removed,
                     ambiguous_keys: e.structural.ambiguous_keys,
                 },
                 coverage_gap: e.gap.as_deref(),
                 lineage_symbol_modified: e.lineage_symbol_modified,
+                origin_scope: e.origin_scope,
+                cross_file_origin_unknown: e.cross_file_origin_unknown,
             })
             .collect(),
         reported_event_file_totals: totals(r),
@@ -202,6 +268,7 @@ pub fn json(command: &str, r: &HistoryResult) -> Result<String, serde_json::Erro
             .map(|(p, n)| CochangeDto {
                 path: relative(p),
                 path_is_utf8: p.to_str().is_some(),
+                native_path_identity: native_path_identity(p),
                 cochange_commit_count: *n,
             })
             .collect(),
@@ -214,15 +281,19 @@ pub fn json(command: &str, r: &HistoryResult) -> Result<String, serde_json::Erro
             structural_comparisons_available: c.structural_available,
             relation_comparisons_available: c.relation_comparisons_available,
             coverage_gaps: c.gaps,
-            head_analysis_gaps: c.head_analysis_gaps,
+            head_supported_source_gaps: c.head_supported_source_gaps,
+            head_expected_exclusions: c.head_expected_exclusions,
+            head_lookup_scope: c.head_lookup_scope,
+            head_resolution_complete: c.head_resolution_complete,
             history_truncated: c.history_truncated,
-            lineage_complete_to_introduction: c.lineage_complete_to_introduction,
+            history_stop_reason: c.history_stop_reason,
+            lineage_origin_scope: c.lineage_origin_scope,
             cochanges_omitted: c.cochanges_omitted,
         },
     };
     bounded_json(
         &Envelope {
-            schema_version: 1,
+            schema_version: 2,
             command: command.into(),
             data,
         },
@@ -234,7 +305,7 @@ pub fn human(command: &str, r: &HistoryResult) -> Result<String, serde_json::Err
     use std::fmt::Write;
     let c = &r.coverage;
     let mut out = format!(
-        "{command}: {}\nstart revision: {}\nhistory policy: first_parent (merge result vs first parent; newest first)\nlineage: unique exact descriptor; Git file renames only\n",
+        "{command}: {}\nstart revision: {}\nhistory policy: first_parent (merge result vs first parent; newest first)\n",
         escape_controls(&if r.target.as_os_str().is_empty() {
             ".".into()
         } else {
@@ -243,6 +314,10 @@ pub fn human(command: &str, r: &HistoryResult) -> Result<String, serde_json::Err
         r.start_revision
     );
     if let Some(s) = &r.symbol {
+        let _ = writeln!(
+            out,
+            "lineage: unique exact descriptor; Git file renames only; path-lineage start does not prove global symbol origin"
+        );
         let _ = writeln!(
             out,
             "symbol: {} ({}, {})",
@@ -270,11 +345,19 @@ pub fn human(command: &str, r: &HistoryResult) -> Result<String, serde_json::Err
         if let Some(modified) = e.lineage_symbol_modified {
             let _ = writeln!(out, "  lineage symbol source slice modified={modified}");
         }
+        if let Some(scope) = e.origin_scope {
+            let _ = writeln!(
+                out,
+                "  origin evidence scope={scope} cross-file origin unknown={}",
+                e.cross_file_origin_unknown
+            );
+        }
         let s = &e.structural;
         let _ = writeln!(
             out,
-            "  syntax evidence: available={} symbols +{} -{} modified={} ambiguous={}; relations available={} +{} -{}",
+            "  syntax evidence: available={} symbol deltas complete={} observed +{} -{} modified={} ambiguous={}; relations available={} +{} -{}",
             s.available,
+            s.symbol_delta_complete,
             s.added,
             s.removed,
             s.modified,
@@ -290,13 +373,18 @@ pub fn human(command: &str, r: &HistoryResult) -> Result<String, serde_json::Err
     let t = totals(r);
     let _ = writeln!(
         out,
-        "reported event file totals: {:?}; syntax symbols +{} -{} modified={}, relations +{} -{} (available comparisons only)",
+        "reported event file totals: {:?}; observed symbol deltas +{} -{} modified={} complete={} incomplete files={} ambiguous keys omitted={}; relation deltas +{} -{} complete={} incomplete files={}",
         t.file_change_counts,
-        t.symbols_added,
-        t.symbols_removed,
-        t.symbols_modified,
+        t.observed_symbols_added,
+        t.observed_symbols_removed,
+        t.observed_symbols_modified,
+        t.symbol_deltas_complete,
+        t.symbol_delta_incomplete_files,
+        t.ambiguous_symbol_keys_omitted,
         t.relations_added,
-        t.relations_removed
+        t.relations_removed,
+        t.relation_deltas_complete,
+        t.relation_delta_incomplete_files
     );
     let _ = writeln!(
         out,
@@ -308,16 +396,24 @@ pub fn human(command: &str, r: &HistoryResult) -> Result<String, serde_json::Err
     }
     let _ = writeln!(
         out,
-        "coverage: inspected={} target commits={} structural={}/{} relation comparisons={} gaps={} HEAD analysis gaps={}\nhistory truncated={} lineage complete to introduction={} co-change omitted={}",
+        "coverage: inspected={} target commits={} structural={}/{} relation comparisons={} gaps={} HEAD supported-source gaps={} expected exclusions={} lookup scope={} resolution complete={}\nhistory truncated={} stop reason={} origin scope={} co-change omitted={}",
         c.commits_inspected,
         c.target_change_commits,
         c.structural_available,
         c.structural_comparisons,
         c.relation_comparisons_available,
         c.gaps,
-        c.head_analysis_gaps,
+        c.head_supported_source_gaps,
+        c.head_expected_exclusions,
+        c.head_lookup_scope.unwrap_or("not_applicable"),
+        match c.head_resolution_complete {
+            Some(true) => "true",
+            Some(false) => "false",
+            None => "not_applicable",
+        },
         c.history_truncated,
-        c.lineage_complete_to_introduction,
+        c.history_stop_reason.unwrap_or("unknown"),
+        c.lineage_origin_scope.unwrap_or("not_applicable"),
         c.cochanges_omitted
     );
     if out.len() > MAX_OUTPUT {
@@ -345,6 +441,6 @@ mod tests {
         assert!(preflight(&r, exact).is_ok());
         assert!(preflight(&r, exact - 1).is_err());
         let v: serde_json::Value = serde_json::from_str(&json("evolution", &r).unwrap()).unwrap();
-        assert_eq!(v["schema_version"], 1);
+        assert_eq!(v["schema_version"], 2);
     }
 }

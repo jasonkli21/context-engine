@@ -1,5 +1,10 @@
 # Phase 8 implementation report
 
+This report records the initial Phase 8 implementation and its original contract.
+The subsequent independent-review fixes revise path-origin certainty, history JSON
+schema and coverage fields; see the [Phase 8 review-fix report](phase-8-review-fix-report.md)
+for the current contract and verification status.
+
 **Date:** 2026-10-16
 **Status:** implemented and locally verified; fresh independent review required
 

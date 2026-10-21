@@ -128,7 +128,8 @@ pub struct Entry {
     pub path: PathBuf,
     pub mode: String,
     pub oid: String,
-    pub size: u64,
+    /// `Some` when supplied by `ls-tree -l`; raw diff records do not carry sizes.
+    pub size: Option<u64>,
 }
 impl Entry {
     pub fn regular(&self) -> bool {
@@ -500,7 +501,7 @@ fn parse_diff(bytes: &[u8], l: Limits) -> Result<Vec<FileChange>, Error> {
                 path: path(p)?,
                 mode: mode.into(),
                 oid: id.into(),
-                size: 0,
+                size: None,
             }))
         };
         let similarity = if kind == "renamed" {
@@ -559,9 +560,9 @@ fn parse_tree(bytes: &[u8], prefix: &Path, l: Limits) -> Result<Vec<Entry>, Erro
             mode: h[0].into(),
             oid: h[2].into(),
             size: if h[3] == "-" {
-                0
+                None
             } else {
-                h[3].parse().map_err(|_| Error::Git("tree size"))?
+                Some(h[3].parse().map_err(|_| Error::Git("tree size"))?)
             },
         });
     }
@@ -671,6 +672,14 @@ mod tests {
             let v = parse_diff(&bytes, exact).unwrap();
             assert_eq!(v[0].status, kind);
             assert!(
+                v[0].before
+                    .as_ref()
+                    .or(v[0].after.as_ref())
+                    .unwrap()
+                    .size
+                    .is_none()
+            );
+            assert!(
                 parse_diff(
                     &bytes,
                     Limits {
@@ -713,8 +722,11 @@ mod tests {
             ..LIMITS
         };
         let e = parse_tree(bytes.as_bytes(), Path::new("scope"), l).unwrap();
-        assert_eq!(e[0].size, 9);
+        assert_eq!(e[0].size, Some(9));
         assert_eq!(e[0].path, Path::new("a.py"));
+        let empty_blob = format!("100644 blob {} 0\tscope/empty.py\0", "2".repeat(40));
+        let empty = parse_tree(empty_blob.as_bytes(), Path::new("scope"), l).unwrap();
+        assert_eq!(empty[0].size, Some(0));
         assert!(
             parse_tree(
                 bytes.as_bytes(),

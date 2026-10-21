@@ -1,10 +1,10 @@
 # Current state
 
-**Last updated:** 2026-10-16
+**Last updated:** 2026-10-21
 
 **Active phase:** Phase 8 — History and Evolution Intelligence
 
-**Overall status:** Phase 8 implemented and locally verified; fresh independent review required
+**Overall status:** Phase 8 review fixes implemented; canonical verification blocked; fresh independent review required
 
 ## Delivered
 
@@ -16,8 +16,14 @@
   current SQLite cache are excluded. Metadata, diff/path/source, structural work,
   event text, retention and output have command-wide bounds; commit-window
   truncation and coverage gaps are explicit. Ambiguous/unavailable lineage stops;
-  shallow/grafted histories are rejected. Schema/compatibility/freshness unchanged.
-  Evidence: [Phase 8 report](reports/phase-8-implementation-report.md).
+  shallow/grafted histories are rejected. Historical JSON is schema v2; persisted
+  schema, analysis compatibility and freshness versions are unchanged.
+- Phase 8 review fixes qualify path-lineage starts without claiming global symbol
+  origin, distinguish partial observed symbol totals, expose native path identities,
+  fail closed on incomplete supported-source HEAD lookup, report explicit history
+  stop reasons, and reuse tree-provided blob sizes. See the
+  [Phase 8 review-fix report](reports/phase-8-review-fix-report.md) and the original
+  [Phase 8 implementation report](reports/phase-8-implementation-report.md).
 
 - Phase 7 automatically reconciles trusted stale snapshots by native path and
   file-input stamp. Only changed/new eligible files are parsed; deleted groups
@@ -132,6 +138,13 @@ Evidence: [Phase 5 review-fix report](reports/phase-5-review-fix-report.md),
   reviews. Local canonical verification and real-repository smoke evidence are
   recorded in the [Phase 8 report](reports/phase-8-implementation-report.md).
   Fresh independent Phase 8 review is required; no earlier phase is accepted here.
+
+- The attached Phase 8 review findings were addressed in one follow-up change.
+  Formatting, context checks and diff whitespace checks passed. The canonical
+  verifier could not reach compilation because this environment cannot resolve
+  crates.io and the available offline Cargo indexes lack required metadata. No new
+  test, Clippy or cross-platform pass is claimed. Fresh independent Phase 8 review
+  remains required; Phase 6/7 and earlier dispositions are unchanged.
 
 - The Phase 7 independent-review handoff findings are addressed in one follow-up
   commit. Its canonical verifier passed with 99 unit / 61 integration tests. Fresh

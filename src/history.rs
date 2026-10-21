@@ -2,7 +2,7 @@
 use crate::{
     change::{self, Snapshot},
     git::revision::{self, Commit, Entry, FileChange, Revisions},
-    model::Symbol,
+    model::{AnalysisStatus, Symbol},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -81,6 +81,7 @@ impl Descriptor {
 #[derive(Default)]
 pub struct Structural {
     pub available: bool,
+    pub symbol_delta_complete: bool,
     pub relations_available: bool,
     pub added: usize,
     pub removed: usize,
@@ -96,6 +97,8 @@ pub struct Event {
     pub structural: Structural,
     pub gap: Option<String>,
     pub lineage_symbol_modified: Option<bool>,
+    pub origin_scope: Option<&'static str>,
+    pub cross_file_origin_unknown: bool,
 }
 #[derive(Default)]
 pub struct Coverage {
@@ -106,9 +109,13 @@ pub struct Coverage {
     pub relation_comparisons_available: usize,
     pub gaps: usize,
     pub history_truncated: bool,
-    pub lineage_complete_to_introduction: bool,
     pub cochanges_omitted: usize,
-    pub head_analysis_gaps: usize,
+    pub head_supported_source_gaps: usize,
+    pub head_expected_exclusions: usize,
+    pub head_lookup_scope: Option<&'static str>,
+    pub head_resolution_complete: Option<bool>,
+    pub history_stop_reason: Option<&'static str>,
+    pub lineage_origin_scope: Option<&'static str>,
 }
 pub struct HistoryResult {
     pub root: PathBuf,
@@ -129,15 +136,10 @@ impl Work {
         &mut self,
         r: &Revisions,
         oid: &str,
-        mut entries: Vec<Entry>,
+        entries: Vec<Entry>,
         texts: bool,
     ) -> Result<Snapshot> {
         spend(&mut self.remaining.files, entries.len())?;
-        for e in &mut entries {
-            if e.regular() {
-                e.size = r.size(e)?;
-            }
-        }
         entries.sort_by(|a, b| a.path.cmp(&b.path));
         let wanted = if texts {
             entries.iter().map(|e| e.path.clone()).collect()
@@ -270,15 +272,19 @@ fn run(
     let mut lineage = if let Some(name) = name {
         let entries = r.inventory(&r.head, revision::LIMITS)?;
         let snapshot = work.snapshot(&r, &r.head, entries, false)?;
-        result.coverage.head_analysis_gaps = snapshot
-            .graph
-            .index
-            .files
-            .iter()
-            .filter(|f| {
-                f.status != crate::model::AnalysisStatus::Analyzed || f.syntax_error_count > 0
-            })
-            .count();
+        for f in &snapshot.graph.index.files {
+            let expected_exclusion = matches!(
+                f.status,
+                AnalysisStatus::UnsupportedLanguage | AnalysisStatus::SkippedRole
+            );
+            if expected_exclusion {
+                result.coverage.head_expected_exclusions += 1;
+            } else if matches!(f.language.name(), "Rust" | "Python")
+                && (f.status != AnalysisStatus::Analyzed || f.syntax_error_count > 0)
+            {
+                result.coverage.head_supported_source_gaps += 1;
+            }
+        }
         let syms = &snapshot.graph.index.symbols;
         let mut found: Vec<_> = syms.iter().filter(|s| s.qualified_name == name).collect();
         if found.is_empty() {
@@ -287,8 +293,15 @@ fn run(
         if let Some(target) = &target {
             found.retain(|s| s.relative_path == *target);
         }
+        if target.is_none() && result.coverage.head_supported_source_gaps > 0 {
+            return Err(format!(
+                "cannot establish unique committed HEAD symbol {name:?}: {} supported Rust/Python source file(s) have incomplete analysis; use --file to select a fully analyzed file",
+                result.coverage.head_supported_source_gaps
+            )
+            .into());
+        }
         if found.len() != 1 {
-            return Err(format!("committed HEAD symbol {name:?}: {} matches; use an exact qualified name and --file (analysis gaps: {})", found.len(), result.coverage.head_analysis_gaps).into());
+            return Err(format!("committed HEAD symbol {name:?}: {} matches; use an exact qualified name and --file (supported source gaps: {})", found.len(), result.coverage.head_supported_source_gaps).into());
         }
         let d = Descriptor::from(found[0]);
         // A recovered symbol in a damaged file cannot seed confident lineage.
@@ -296,18 +309,30 @@ fn run(
             path: d.path.clone(),
             mode: "100644".into(),
             oid: String::new(),
-            size: 0,
+            size: Some(0),
         };
         if !change::usable(&snapshot, Some(&entry)) {
             return Err("committed HEAD symbol analysis is incomplete".into());
         }
         result.symbol = Some(d.clone());
         result.target = d.path.clone();
+        result.coverage.head_lookup_scope = Some(if target.is_some() {
+            "selected_file"
+        } else {
+            "supported_rust_python_inventory"
+        });
+        result.coverage.head_resolution_complete = Some(true);
         Some(d)
     } else {
         None
     };
+    let window_has_older_commits = commits.len() > max_commits;
+    let root_in_window = commits
+        .iter()
+        .take(max_commits)
+        .any(|commit| commit.first_parent.is_none());
     let mut cochanges = BTreeMap::<PathBuf, usize>::new();
+    let mut stop_reason = None;
     for commit in commits.into_iter().take(max_commits) {
         r.head = commit.oid.clone();
         r.base = commit.first_parent.clone().unwrap_or_default();
@@ -340,6 +365,8 @@ fn run(
             let compared = change::compare_file(git.clone(), &old, &new);
             let mut structural = Structural {
                 available: compared.comparison_available,
+                symbol_delta_complete: compared.comparison_available
+                    && compared.ambiguous_keys == 0,
                 relations_available: compared.relation_comparison_available,
                 ambiguous_keys: compared.ambiguous_keys,
                 ..Structural::default()
@@ -370,9 +397,12 @@ fn run(
                 unavailable = Some("relation comparison incomplete or ambiguous".into());
             }
             let mut lineage_symbol_modified = None;
+            let mut origin_scope = None;
+            let mut cross_file_origin_unknown = false;
             let kind = if let Some(d) = &mut lineage {
                 if git.status == "entered_scope" || !structural.available {
                     stop = true;
+                    stop_reason = Some("coverage_gap");
                     unavailable.get_or_insert("lineage crosses scan scope".into());
                     "comparison_unavailable"
                 } else {
@@ -384,13 +414,17 @@ fn run(
                     let before_matches = matching(&old, &before_d);
                     if after_matches.len() != 1 || before_matches.len() > 1 {
                         stop = true;
+                        stop_reason = Some("coverage_gap");
                         unavailable =
                             Some("exact descriptor is not unique at historical boundary".into());
                         "ambiguous"
                     } else if before_matches.is_empty() {
                         stop = true;
-                        result.coverage.lineage_complete_to_introduction = true;
-                        "introduced"
+                        stop_reason = Some("tracked_path_start");
+                        origin_scope = Some("tracked_file_first_parent_path");
+                        cross_file_origin_unknown = true;
+                        result.coverage.lineage_origin_scope = origin_scope;
+                        "path_lineage_start"
                     } else {
                         let modified = compared.symbols.iter().any(|s| {
                             s.kind == "modified" && s.after == after_matches.first().copied()
@@ -429,6 +463,8 @@ fn run(
                 structural,
                 gap: unavailable,
                 lineage_symbol_modified,
+                origin_scope,
+                cross_file_origin_unknown,
             });
         }
         if name.is_none() || result.events.len() > event_start {
@@ -459,7 +495,16 @@ fn run(
             break;
         }
     }
-    result.coverage.history_truncated &= result.coverage.commits_inspected == max_commits;
+    result.coverage.history_truncated = window_has_older_commits && stop_reason.is_none();
+    result.coverage.history_stop_reason = Some(if let Some(reason) = stop_reason {
+        reason
+    } else if result.coverage.history_truncated {
+        "window_limit"
+    } else if root_in_window {
+        "first_parent_root"
+    } else {
+        "history_window_complete"
+    });
     let mut cochanges: Vec<_> = cochanges.into_iter().collect();
     cochanges.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     result.coverage.cochanges_omitted = cochanges.len().saturating_sub(limits.rendered_cochanges);

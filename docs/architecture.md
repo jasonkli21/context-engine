@@ -647,8 +647,12 @@ fail-closed symbol/relation coverage. Numeric IDs remain snapshot-local.
 `history.rs` owns on-demand first-parent walks from resolved committed HEAD.
 Merges compare their result with the first parent. History seeds a unique committed
 symbol and selectively compares its file, following Git file renames only while
-language/kind/qualified-name continuity remains unique. Ambiguous/unavailable
-boundaries stop introduction claims; crossing a nested scope is such a boundary.
+language/kind/qualified-name continuity remains unique. A missing prior match ends
+the tracked file-path lineage; it does not prove global symbol origin because
+cross-file moves and copies are not resolved. Ambiguity in the tracked descriptor
+or unavailable source analysis stops lineage; unrelated ambiguous symbol groups
+mark whole-file deltas partial without stopping a unique tracked descriptor.
+Crossing a nested scope is a lineage boundary.
 Evolution selects historical paths lexically and aggregates matching file events,
 including deleted paths and renames crossing a selector, without directory identity.
 Co-change counts unique other scoped paths in target-event commits and never means
@@ -657,11 +661,16 @@ dependency, causality or test coverage. Event order follows Git, not timestamps.
 A plain command-owned budget covers metadata, unscoped raw diffs/paths, historical
 source bytes, analyzed entries, structural records/comparisons, events/event text
 and co-change retention. Public commit limits default to 128 with a hard maximum
-of 512. Window exhaustion returns explicit truncation; hard resource exhaustion
-fails. Output uses explicit schema-v1 DTOs and conservative preflight plus bounded
-serialization. Renderers never call Git or read files. History has no SQLite/cache
-access and leaves schema v3, compatibility v1 and freshness-v2 unchanged. Historical
-persistence, full-DAG lineage and historical centrality remain deferred.
+of 512. Window exhaustion returns explicit truncation only when it prevents further
+requested work; stopping at a tracked-path start or coverage boundary is reported
+separately. Symbol totals distinguish observed lower-bound deltas from complete
+comparisons. HEAD lookup scopes uniqueness to a selected file or the supported
+Rust/Python inventory and fails closed on incomplete supported-source analysis.
+Output uses explicit schema-v2 DTOs, lossless Unix byte or Windows UTF-16LE path
+identities, conservative preflight and bounded serialization. Renderers never call
+Git or read files. History has no SQLite/cache access and leaves schema v3,
+compatibility v1 and freshness-v2 unchanged. Historical persistence, full-DAG
+lineage and historical centrality remain deferred.
 
 ---
 

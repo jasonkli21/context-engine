@@ -79,13 +79,16 @@ or probe Git. Help and version: `ctx --help`, `ctx scan --help`, `ctx --version`
 HEAD (exact qualified name, then exact local name, then the file filter). It walks
 first-parent commits newest first, compares a merge with its first parent, and
 follows Git file-rename evidence when exact language/kind/qualified-name continuity
-is unique. Source-slice changes, introductions, renames and unavailable/ambiguous
-boundaries are explicit. A rename event also reports whether the tracked symbol
-changed. There is no cross-file symbol-move inference or global symbol identity.
+is unique. Source-slice changes, tracked-path lineage starts, renames and
+unavailable/ambiguous boundaries are explicit. A path-lineage start does not prove
+global symbol origin; cross-file origin remains unknown. A rename event also reports
+whether the tracked symbol changed. There is no cross-file symbol-move inference or
+global symbol identity.
 
-`evolution TARGET [--repo PATH]` reports Git file changes, aggregate file/symbol/
-relation counts from available comparisons, coverage gaps and same-commit co-change
-paths. Targets are lexical paths relative to the requested scope; deleted paths
+`evolution TARGET [--repo PATH]` reports Git file changes, observed file/symbol/
+relation deltas, their completeness, coverage gaps and same-commit co-change paths.
+Ambiguous symbol groups are omitted and make symbol totals explicitly partial.
+Targets are lexical paths relative to the requested scope; deleted paths
 are supported, and `.` selects all descendants. Directory results aggregate file
 events rather than infer directory identity. A file selector follows that path's
 changes, including renames entering/leaving it; only `history` tracks file lineage.
@@ -94,10 +97,14 @@ Both commands accept `--max-commits` (default 128, range 1–512) and
 `--max-parse-file-size`. The commit window reports truncation; hard command-wide
 resource limits fail clearly. Unsupported/oversized/invalid/syntax-damaged source
 retains Git facts with structural coverage gaps. Shallow repositories and grafted
-ancestry are rejected. Dirty checkout source has no effect. Historical queries
-read immutable Git objects, do not execute repository code, and never access the
-current SQLite cache. JSON uses schema v1. Co-change is scoped commit occurrence,
-with an inspected target-event-commit denominator, not dependency or test coverage.
+ancestry are rejected. HEAD lookup fails closed when supported Rust/Python source
+has incomplete analysis unless `--file` selects a fully analyzed file; expected
+unsupported or skipped files are counted separately. Dirty checkout source has no
+effect. Historical queries read immutable Git objects, do not execute repository
+code, and never access the current SQLite cache. History/evolution JSON uses schema
+v2. Display paths are accompanied by native byte identities on Unix and UTF-16LE
+identities on Windows. Co-change is scoped commit occurrence, with an inspected
+target-event-commit denominator, not dependency or test coverage.
 See the [Phase 8 report](docs/reports/phase-8-implementation-report.md) for bounds.
 
 ### Task context bundles
@@ -465,9 +472,12 @@ No target source is executed.
 commands reuse persisted analysis, with no cross-file import resolution or compiler
 integration. Existing filesystem snapshot and Git-metadata limitations apply.
 
-### JSON schema v1
+### JSON schemas
 
-All JSON output is wrapped as `{"schema_version":1,"command":"scan","data":{...}}`.
+Most JSON output is wrapped as `{"schema_version":1,"command":"scan","data":{...}}`.
+The `history` and `evolution` commands use schema version 2 for explicit path-origin,
+partial-total, lookup-coverage and native-path-identity fields. The v1 contracts
+remain unchanged for the other commands.
 `scan` and `stats` data contain `root`, `directory_count`, `totals`, `languages`,
 `roles`, `largest_files`, `git`, and `warnings`. Only `scan` includes the full
 `files` inventory. File records contain `path`, `language`, `role`, `size_bytes`,
@@ -534,8 +544,10 @@ not an identity for exact dirty working-tree content.
 
 ## Future direction
 
-Later phases may add history/co-change signals,
-service adapters and cross-repository context. These capabilities are not implemented.
+The standalone bounded `history` and `evolution` commands, including same-commit
+co-change evidence, are implemented. Later phases may connect those signals to
+context ranking and add service adapters or cross-repository context; those
+integrations are not implemented.
 
 ## Why Rust?
 

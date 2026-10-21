@@ -106,7 +106,7 @@ fn analyze_with_limits(
             if let Some(e) = if before { &c.before } else { &c.after } {
                 let mut e = e.clone();
                 if e.regular() {
-                    e.size = revisions.size(&e)?;
+                    e.size = Some(revisions.size(&e)?);
                 }
                 entries.push(e);
             }
@@ -233,14 +233,17 @@ pub(crate) fn snapshot(
 ) -> Result<Snapshot> {
     let mut map = BTreeMap::new();
     let mut records = vec![];
-    for e in entries {
+    for mut e in entries {
         let language = classify_language(&e.path);
         let role = classify_role(&e.path, &language);
+        if e.regular() && e.size.is_none() {
+            e.size = Some(r.size(&e)?);
+        }
         records.push(FileRecord {
             relative_path: e.path.clone(),
             language,
             role,
-            size_bytes: e.size,
+            size_bytes: e.size.unwrap_or(0),
             line_count: None,
         });
         map.insert(e.path.clone(), e);
@@ -268,12 +271,13 @@ pub(crate) fn snapshot(
         if !e.regular() || e.path.to_str().is_none() {
             return Err(AnalysisStatus::ReadFailed);
         }
-        bytes = bytes.saturating_add(e.size);
+        let size = e.size.unwrap_or(0);
+        bytes = bytes.saturating_add(size);
         if bytes > limits.source_bytes {
             fatal = Some(revision::Error::Limit("aggregate source bytes"));
             return Err(AnalysisStatus::ReadFailed);
         }
-        match r.blob(e, e.size) {
+        match r.blob(e, size) {
             Ok(data) => match String::from_utf8(data) {
                 Ok(text) => {
                     if wanted.contains(&file.relative_path) {
@@ -783,7 +787,7 @@ mod tests {
             path: PathBuf::from(std::ffi::OsString::from_vec(b"a\xff.py".to_vec())),
             mode: "100644".into(),
             oid: "1".repeat(40),
-            size: 17,
+            size: Some(17),
         };
         // Synthetic native path avoids filesystems that reject invalid UTF-8 names.
         let old = snapshot(
