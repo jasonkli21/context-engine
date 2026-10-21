@@ -204,6 +204,14 @@ pub fn json(
     b: &Bundle,
     c: Option<&ChangeSignal>,
 ) -> Result<String, serde_json::Error> {
+    bounded_json(&dto(g, t, b, c)?, MAX_JSON_BYTES)
+}
+pub fn dto<'a>(
+    g: &'a RepositoryGraph,
+    t: &'a Task,
+    b: &'a Bundle,
+    c: Option<&'a ChangeSignal>,
+) -> Result<impl Serialize + 'a, serde_json::Error> {
     check_materialization(g, t, b, c, MAX_JSON_BYTES)?;
     let selected = b
         .selected
@@ -243,31 +251,28 @@ pub fn json(
             reason: s.reason,
         })
         .collect();
-    bounded_json(
-        &Envelope {
-            schema_version: 1,
-            command: "context".into(),
-            data: ContextDto {
-                repository: query_context(&g.index, Some(g)),
-                git_head: g.index.git.as_ref().and_then(|m| m.head_commit.as_deref()),
-                git_dirty: g.index.git.as_ref().and_then(|m| m.is_dirty),
-                task: &t.original,
-                ranker_version: RANKER_VERSION,
-                fallback_mode: b.ranking.fallback.then_some("centrality"),
-                budget: BudgetDto {
-                    unit: "utf8_content_bytes",
-                    max: b.budget,
-                    used: b.used,
-                    remaining: b.budget - b.used,
-                },
-                change: c.map(change_dto),
-                coverage: coverage(g, t, b),
-                selected,
-                skipped,
+    Ok(Envelope {
+        schema_version: 1,
+        command: "context".into(),
+        data: ContextDto {
+            repository: query_context(&g.index, Some(g)),
+            git_head: g.index.git.as_ref().and_then(|m| m.head_commit.as_deref()),
+            git_dirty: g.index.git.as_ref().and_then(|m| m.is_dirty),
+            task: &t.original,
+            ranker_version: RANKER_VERSION,
+            fallback_mode: b.ranking.fallback.then_some("centrality"),
+            budget: BudgetDto {
+                unit: "utf8_content_bytes",
+                max: b.budget,
+                used: b.used,
+                remaining: b.budget - b.used,
             },
+            change: c.map(change_dto),
+            coverage: coverage(g, t, b),
+            selected,
+            skipped,
         },
-        MAX_JSON_BYTES,
-    )
+    })
 }
 pub fn human(
     g: &RepositoryGraph,

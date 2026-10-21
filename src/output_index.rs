@@ -159,8 +159,22 @@ pub fn json(
     index: &RepositoryIndex,
     query: Option<&str>,
 ) -> Result<String, serde_json::Error> {
+    super::bounded_json(&dto(command, index, query), super::MAX_JSON_BYTES)
+}
+pub fn dto<'a>(
+    command: &str,
+    index: &'a RepositoryIndex,
+    query: Option<&'a str>,
+) -> impl Serialize + 'a {
+    dto_with_lookup(command, index, query, query.map(|q| index.lookup(q)))
+}
+fn dto_with_lookup<'a>(
+    command: &str,
+    index: &'a RepositoryIndex,
+    query: Option<&'a str>,
+    lookup: Option<(&'static str, Vec<&'a crate::model::Symbol>)>,
+) -> impl Serialize + 'a {
     let (languages, kinds) = distributions(index);
-    let lookup = query.map(|q| index.lookup(q));
     let data = ReportDto {
         root: index.root.to_string_lossy().into_owned(),
         git: index.git.as_ref().map(GitDto::from),
@@ -205,16 +219,38 @@ pub fn json(
             })
             .collect(),
     };
-    super::bounded_json(
-        &Envelope {
-            schema_version: 1,
-            command: command.into(),
-            data,
-        },
-        super::MAX_JSON_BYTES,
+    Envelope {
+        schema_version: 1,
+        command: command.into(),
+        data,
+    }
+}
+
+pub fn symbol_dto(result: &crate::application::Symbol) -> impl Serialize + '_ {
+    dto_with_lookup(
+        "symbol",
+        &result.index,
+        Some(&result.query),
+        Some((result.match_mode, result.matches.iter().collect())),
+    )
+}
+pub fn symbol_human(result: &crate::application::Symbol) -> String {
+    human_with_lookup(
+        "symbol",
+        &result.index,
+        Some(&result.query),
+        Some((result.match_mode, result.matches.iter().collect())),
     )
 }
 pub fn human(command: &str, index: &RepositoryIndex, query: Option<&str>) -> String {
+    human_with_lookup(command, index, query, query.map(|q| index.lookup(q)))
+}
+fn human_with_lookup(
+    command: &str,
+    index: &RepositoryIndex,
+    query: Option<&str>,
+    lookup: Option<(&'static str, Vec<&crate::model::Symbol>)>,
+) -> String {
     let mut text = format!(
         "Repository index: {}\n",
         escape_controls(&index.root.to_string_lossy())
@@ -250,7 +286,7 @@ pub fn human(command: &str, index: &RepositoryIndex, query: Option<&str>) -> Str
         }
     } else {
         let symbols = if let Some(query) = query {
-            let (mode, matches) = index.lookup(query);
+            let (mode, matches) = lookup.unwrap();
             text.push_str(&format!(
                 "\n{} {} ({mode}) for {}\n",
                 matches.len(),

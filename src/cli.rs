@@ -17,6 +17,10 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Serve authenticated read-only HTTP on a loopback IP.
+    Serve(ServeArgs),
+    /// Serve read-only MCP 2026-07-28 over stdio (protocol stdout only).
+    Mcp(McpArgs),
     /// Trace a committed HEAD symbol through bounded first-parent history.
     History(HistoryArgs),
     /// Summarize a historical path over bounded first-parent history.
@@ -228,4 +232,17 @@ pub struct EvolutionArgs {
     pub max_parse_file_size: u64,
     #[arg(long, value_enum, default_value = "human")]
     pub format: Format,
+}
+
+#[derive(Debug, Args)]
+pub struct ServeArgs {
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+    #[arg(long, default_value = "127.0.0.1:0")]
+    pub listen: std::net::SocketAddr,
+}
+#[derive(Debug, Args)]
+pub struct McpArgs {
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
 }

@@ -167,7 +167,17 @@ fn lineage_renames_merge_cochange_dirty_determinism_and_cache_isolation() {
     );
     write(&r, "new.py", "def contradictory_dirty(): pass\n");
     assert_eq!(bytes, run(&r, "history", "Box.run", &[]).1);
-    assert_eq!(bytes, run(&r, "history", "run", &["--file", "new.py"]).1);
+    let (selected, _) = run(&r, "history", "run", &["--file", "new.py"]);
+    // Phase 8 review fixes distinguish scoped HEAD lookup coverage; the lineage
+    // evidence stays equivalent, while the full envelopes intentionally differ.
+    assert_eq!(v["symbol"], selected["symbol"]);
+    assert_eq!(v["events"], selected["events"]);
+    assert_eq!(v["cochanges"], selected["cochanges"]);
+    assert_eq!(
+        v["coverage"]["head_lookup_scope"],
+        "supported_rust_python_inventory"
+    );
+    assert_eq!(selected["coverage"]["head_lookup_scope"], "selected_file");
     ctx()
         .args(["history", "run"])
         .arg(&r)
@@ -626,7 +636,14 @@ fn non_utf8_history_paths_have_distinct_native_identities() {
     let first = PathBuf::from(OsString::from_vec(b"a\xff.py".to_vec()));
     let second = PathBuf::from(OsString::from_vec(b"a\xfe.py".to_vec()));
     // Write native names directly; the string helper intentionally accepts UTF-8 only.
-    fs::write(r.join(&first), "def old(): return 1\n").unwrap();
+    if let Err(error) = fs::write(r.join(&first), "def old(): return 1\n") {
+        if cfg!(target_os = "macos") && error.raw_os_error() == Some(92) {
+            // APFS cannot represent this native fixture. Injected native identity
+            // tests in history/output/store still cover codec distinctions.
+            return;
+        }
+        panic!("failed to create native history fixture: {error}");
+    }
     fs::write(r.join(&second), "def other(): return 1\n").unwrap();
     commit(r, "add colliding display names");
     fs::write(r.join("target.py"), "def target(): return 2\n").unwrap();

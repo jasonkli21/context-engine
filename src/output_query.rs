@@ -158,9 +158,18 @@ pub fn search_json(
     kind: SearchKind,
     result: &SearchResult,
 ) -> Result<String, serde_json::Error> {
-    json(
-        "search",
-        SearchDto {
+    bounded_json(&search_dto(index, query, kind, result), MAX_JSON_BYTES)
+}
+pub fn search_dto<'a>(
+    index: &'a RepositoryIndex,
+    query: &'a str,
+    kind: SearchKind,
+    result: &'a SearchResult,
+) -> impl Serialize + 'a {
+    Envelope {
+        schema_version: 1,
+        command: "search".into(),
+        data: SearchDto {
             context: query_context(index, None),
             query,
             kind: kind.name(),
@@ -183,7 +192,7 @@ pub fn search_json(
                     .count()
             },
         },
-    )
+    }
 }
 pub fn search_human(
     index: &RepositoryIndex,
@@ -275,10 +284,19 @@ pub fn neighborhood_json(
     file: bool,
     result: &QueryResult,
 ) -> Result<String, serde_json::Error> {
+    bounded_json(&neighborhood_dto(g, selector, file, result), MAX_JSON_BYTES)
+}
+pub fn neighborhood_dto<'a>(
+    g: &'a RepositoryGraph,
+    selector: &'a str,
+    file: bool,
+    result: &'a QueryResult,
+) -> impl Serialize + 'a {
     let owners = file_owners(g);
-    json(
-        "neighborhood",
-        NeighborhoodDto {
+    Envelope {
+        schema_version: 1,
+        command: "neighborhood".into(),
+        data: NeighborhoodDto {
             context: query_context(&g.index, Some(g)),
             selector,
             selector_kind: if file { "file" } else { "symbol" },
@@ -309,7 +327,7 @@ pub fn neighborhood_json(
                 })
                 .collect(),
         },
-    )
+    }
 }
 pub fn neighborhood_human(g: &RepositoryGraph, selector: &str, result: &QueryResult) -> String {
     let owners = file_owners(g);

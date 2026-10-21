@@ -2,11 +2,29 @@
 
 **Last updated:** 2026-10-21
 
-**Active phase:** Phase 8 — History and Evolution Intelligence
+**Active phase:** Phase 9 — Local Service + Agent Adapter
 
-**Overall status:** Phase 8 review fixes implemented; canonical verification blocked; fresh independent review required
+**Overall status:** Phase 9 implemented; local verification recorded below; independent review required
 
 ## Delivered
+
+- Phase 9 adds a synchronous application seam for search, exact symbol lookup,
+  neighborhood, committed impact and full-file task context. CLI, HTTP and MCP
+  invoke the same use cases and schema-v1 DTO builders; reconciliation warnings
+  are returned as data and CLI alone renders them on stderr.
+- `ctx serve` pins one canonical root, binds loopback only, requires a generated
+  environment bearer token for intelligence, checks exact Host/rejects Origin,
+  and exposes health plus five read-only v1 operations. Connections, readers,
+  bodies, responses and deadlines are bounded. One completion-owned blocking
+  permit survives caller timeout/disconnect; current queries reconcile each time.
+- `ctx mcp` exposes the same five operations over stdio using official rmcp 3.6.0,
+  MCP 2026-07-28 only, modern metadata/discovery and no initialize handshake.
+  A narrow metadata guard/direct SDK service avoids dual-era bootstrap assumptions.
+  Frame/output limits and outstanding-response bounds apply; stdout is protocol-only.
+- The existing cache/schema/analysis versions and descriptive boundary are unchanged.
+  Phase 9 also repairs inherited Phase 8 compile/test fixture errors discovered by
+  executable regression verification. See the [Phase 9 report](reports/phase-9-implementation-report.md)
+  for exact scope, SDK interoperability, security/concurrency tests and limitations.
 
 - Phase 8 `history SYMBOL [PATH]` resolves committed HEAD symbols and follows
   bounded first-parent, exact-descriptor file lineage through Git rename evidence.
@@ -134,6 +152,16 @@ Evidence: [Phase 5 review-fix report](reports/phase-5-review-fix-report.md),
 
 ## Acceptance and verification
 
+- The maintainer directly authorized Phase 9 from `6693892`, despite pending Phase 8
+  and earlier reviews, and requested one commit. This authorizes implementation,
+  not acceptance. Canonical verification passed locally: formatting, Clippy,
+  context checks, 106 unit / 78 integration tests. All-target check and release
+  build passed. CLI/HTTP/MCP parity and release smokes passed on both real
+  repositories' `src` scopes; the full engine root hit existing scanner bounds
+  due to ignored build artifacts. Two APFS native-name fixture cases returned
+  early; injected native-path tests ran. Details are recorded in the [Phase 9 report](reports/phase-9-implementation-report.md). Fresh independent
+  Phase 9 review remains required. No earlier review disposition is changed.
+
 - The maintainer directly authorized Phase 8 from `ef44712` despite earlier pending
   reviews. Local canonical verification and real-repository smoke evidence are
   recorded in the [Phase 8 report](reports/phase-8-implementation-report.md).
@@ -235,6 +263,16 @@ Evidence: [Phase 5 review-fix report](reports/phase-5-review-fix-report.md),
 
 ## Known limitations
 
+Phase 9 is local, single-root and serialized. Adapter context budgets stop at 1 MiB
+of full-file content; response limits can reject larger evidence sets. HTTP timeouts
+do not kill blocking work. Shutdown waits for that work without a hard deadline.
+MCP is 2026-07-28 only; no legacy or HTTP MCP. Its 16 outstanding-response slots
+include cancelled calls that produce no response, so repeated cancellations may
+require reconnecting. Same-user/token-authorized HTTP clients and stdio clients
+can obtain sensitive repository metadata/source; this is not a multi-user sandbox.
+No third-party MCP client, IPv6, Linux/Windows or external deployment execution is
+claimed. Native textual selectors retain existing UTF-8/lossy-path limitations.
+
 Phase 8 uses a bounded first-parent window and exact current-HEAD descriptors;
 full-DAG lineage, deleted-symbol lookup, symbol renames/moves, historical centrality
 and historical persistence remain absent. HEAD lookup analyzes its scoped committed
@@ -282,8 +320,8 @@ Imports remain unresolved. Unqualified method/nested calls remain unresolved
 unless their syntax exactly matches a unique qualified name. Call-site references
 and same-file matches are syntax heuristics, not binding/type/dispatch or compiler guarantees. IDs are index-local
 and may renumber across edits. Current-state graphs reconstruct from validated persisted analysis; revision commands
-build immutable Git-object models. Watch callback/channel concurrency is narrow; no
-async, MCP, embeddings, model calls or policy behavior exists.
+build immutable Git-object models. Watch callback/channel concurrency is narrow; Phase 9 isolates synchronous core
+work behind async adapters. No embeddings, model calls or policy behavior exists.
 Relation budgets discard a failed file's extracted facts while retaining valid
 symbols and structural containment. Queries expose truncation on safety overflow.
 UTF-8 Rust/Python only; generated/vendor source skipped. Non-UTF-8 paths are
@@ -293,6 +331,8 @@ filesystem TOCTOU races remain; results are not atomic snapshots.
 
 ## Next step
 
+Fresh independent Phase 9 review of MCP interoperability, HTTP local security,
+blocking/response ownership, cache races, disclosure boundaries and evidence parity.
 Fresh independent Phase 8 review of immutable history, lineage, scope, bounds and
 production integration. Fresh independent Phase 7 review of incremental storage, freshness, races, watcher
 ownership and integration. Phase 6 fresh re-review remains pending.

@@ -725,7 +725,15 @@ mod tests {
         assert_eq!(e[0].size, Some(9));
         assert_eq!(e[0].path, Path::new("a.py"));
         let empty_blob = format!("100644 blob {} 0\tscope/empty.py\0", "2".repeat(40));
-        let empty = parse_tree(empty_blob.as_bytes(), Path::new("scope"), l).unwrap();
+        let empty = parse_tree(
+            empty_blob.as_bytes(),
+            Path::new("scope"),
+            Limits {
+                tree_paths: "empty.py".len(),
+                ..l
+            },
+        )
+        .unwrap();
         assert_eq!(empty[0].size, Some(0));
         assert!(
             parse_tree(

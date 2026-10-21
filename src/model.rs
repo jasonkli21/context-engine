@@ -220,7 +220,7 @@ impl SymbolKind {
         }
     }
 }
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct Symbol {
     #[serde(skip)]
     pub relative_path: PathBuf,

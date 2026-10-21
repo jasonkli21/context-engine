@@ -561,17 +561,21 @@ fn report(set: &ChangeSet) -> ReportDto<'_> {
         directly_changed_test_doc_candidates: candidates,
     }
 }
-pub fn json(command: &str, set: &ChangeSet) -> Result<String, serde_json::Error> {
-    let _estimate = check_materialization(set, MAX_JSON_BYTES)?;
-    bounded_json(
-        &Envelope {
-            schema_version: 1,
-            command: command.into(),
-            data: report(set),
-        },
-        MAX_JSON_BYTES,
-    )
+pub fn dto<'a>(
+    command: &str,
+    set: &'a ChangeSet,
+) -> Result<impl Serialize + 'a, serde_json::Error> {
+    check_materialization(set, MAX_JSON_BYTES)?;
+    Ok(Envelope {
+        schema_version: 1,
+        command: command.into(),
+        data: report(set),
+    })
 }
+pub fn json(command: &str, set: &ChangeSet) -> Result<String, serde_json::Error> {
+    bounded_json(&dto(command, set)?, MAX_JSON_BYTES)
+}
+
 pub fn human(command: &str, set: &ChangeSet) -> Result<String, serde_json::Error> {
     use std::fmt::Write;
     let estimate = check_materialization(set, MAX_JSON_BYTES)?;

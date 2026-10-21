@@ -624,9 +624,49 @@ inventory changes. Operational output belongs to the CLI on stderr;
 there is no streaming machine contract. Freshness/write failures preserve the prior
 committed generation. Normal process termination is sufficient.
 
-Historical caches, full-text search, parallel parsers, async and service protocols
-remain deferred. Phase 8 on-demand history is separate from current-state storage;
-Phase 9 service/adapters and Phase 11 evidence exports remain future milestones.
+Historical caches, full-text search and parallel parsers remain deferred.
+Phase 8 on-demand history is separate from current-state storage. Phase 9 adapters
+reuse this reconciliation boundary; Phase 11 evidence exports remain future work.
+
+### Phase 9 application and adapters
+
+`application.rs` owns synchronous typed search, exact symbol, neighborhood,
+committed impact and full-file context use cases. CLI dispatch calls these same
+functions. Reconciliation returns warnings as data; only CLI callers print them.
+The domain has no Tokio, Clap, HTTP or MCP dependency. Existing `output_*` modules
+expose serializable DTO builders used by CLI rendering and both adapters, avoiding
+JSON scraping and preserving the existing command schemas.
+
+`adapter.rs` validates the fixed operation vocabulary, adds a schema-v1 wrapper
+with current/committed state and warnings, checks serialized size before allocating
+the JSON value, and owns one completion-held semaphore permit. Trusted startup
+configuration owns the canonical root and existing parse limits. No remote request
+contains root/cache/executable configuration. `spawn_blocking` performs every
+query and DTO construction operation; the permit moves into the closure so dropped
+request futures cannot admit overlapping work. Each current query reconciles;
+there is no service-owned graph/index or automatic watcher.
+
+`service.rs` binds loopback IPs only and requires a launch-environment bearer token
+for intelligence routes. Exact bound authority, no Origin, no CORS, no-store,
+JSON/method/size checks and redacted errors delimit the local HTTP boundary.
+32 connection slots, 45-second connection lifetimes, 16 body readers, 16 KiB
+requests and 8 MiB responses bound transport work. The 30-second query timeout
+does not kill blocking work. Shutdown stops acceptance, permits five seconds of
+socket draining and then drains the blocking job without a hard time bound.
+
+`mcp.rs` adapts the same operations using pinned official rmcp 3.6.0, restricted
+to MCP 2026-07-28 stateless metadata/discovery semantics. The SDK owns JSON-RPC,
+stdio framing, metadata validation, cancellation and EOF; no legacy initialization
+protocol is advertised. A 16 KiB incoming frame bound and 8 MiB complete tool-result
+bound supplement domain limits. At most 16 requests can retain unsent responses;
+capacity exhaustion/duplicate outstanding IDs close stdio and writes time out after
+ten seconds. Cancelled requests without responses conservatively retain a slot
+until reconnect. The adapter uses the SDK direct-service entry point with a narrow
+per-request metadata guard, avoiding its dual-era bootstrap behavior. Stdio is client-authorized and has no HTTP token.
+Tool schemas reject extra fields; runtime validation additionally enforces byte,
+selector, range and combined-argument constraints. Source disclosure is intentional
+for authenticated HTTP and trusted MCP clients. No policy/authority judgments,
+repository writes or execution tools are exposed.
 
 ---
 

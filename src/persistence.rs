@@ -636,7 +636,10 @@ mod tests {
             if matches!(
                 error.kind(),
                 std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::InvalidInput
-            ) {
+            ) || (cfg!(target_os = "macos") && error.raw_os_error() == Some(92))
+            {
+                // APFS rejects invalid UTF-8 with EILSEQ. Injected native-path
+                // identity/store tests still run on these filesystems.
                 return;
             }
             panic!("failed to create native path fixture: {error}");

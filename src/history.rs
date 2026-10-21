@@ -136,7 +136,7 @@ impl Work {
         &mut self,
         r: &Revisions,
         oid: &str,
-        entries: Vec<Entry>,
+        mut entries: Vec<Entry>,
         texts: bool,
     ) -> Result<Snapshot> {
         spend(&mut self.remaining.files, entries.len())?;
@@ -611,7 +611,7 @@ mod tests {
         let n = r.inventory(&r.head, revision::LIMITS).unwrap()[0].size;
         assert!(
             check(Limits {
-                source: n * 2,
+                source: n.unwrap() * 2,
                 ..LIMITS
             })
             .is_err()

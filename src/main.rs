@@ -1,3 +1,5 @@
+mod adapter;
+mod application;
 mod change;
 mod classify;
 mod cli;
@@ -7,6 +9,7 @@ mod graph;
 mod history;
 mod index;
 mod language;
+mod mcp;
 mod model;
 mod output;
 mod paths;
@@ -14,6 +17,7 @@ mod persistence;
 mod query;
 mod relations;
 mod scan;
+mod service;
 mod source;
 mod store;
 mod watch;
@@ -28,9 +32,19 @@ use std::{
     process::ExitCode,
 };
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
+fn run() -> Result<(), application::Error> {
     let cli = Cli::parse();
     let rendered = match cli.command {
+        Command::Serve(args) => {
+            let app = application::Application::pinned(&args.path)?;
+            let token = std::env::var("CONTEXT_ENGINE_SERVE_TOKEN")
+                .map_err(|_| "CONTEXT_ENGINE_SERVE_TOKEN is required")?;
+            return runtime()?.block_on(service::run(app, args.listen, token));
+        }
+        Command::Mcp(args) => {
+            let app = application::Application::pinned(&args.path)?;
+            return runtime()?.block_on(mcp::run(app));
+        }
         Command::History(args) => {
             let result = history::history(
                 &args.analysis.path,
@@ -75,7 +89,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     write_output(&rendered)
 }
 
-fn scan_command(command: Command) -> Result<String, Box<dyn std::error::Error>> {
+fn scan_command(command: Command) -> Result<String, application::Error> {
     let (command, options, format) = match command {
         Command::Scan(args) => {
             let format = args.format;
@@ -101,16 +115,25 @@ fn scan_command(command: Command) -> Result<String, Box<dyn std::error::Error>> 
 fn current_analysis(
     options: &model::IndexOptions,
     force: bool,
-) -> Result<persistence::AnalysisArtifact, persistence::CacheError> {
-    let result = persistence::reconcile(options, force)?;
+) -> Result<persistence::AnalysisArtifact, application::Error> {
+    let result = application::Application::from(model::IndexOptions {
+        root: options.root.clone(),
+        max_parse_file_bytes: options.max_parse_file_bytes,
+        probe_git: options.probe_git,
+    })
+    .analysis(force)?;
+    Ok(cli_outcome(result))
+}
+fn cli_outcome<T>(result: application::Outcome<T>) -> T {
     for warning in result.warnings {
         eprintln!("ctx: warning: {}", output::escape_controls(&warning));
     }
-    Ok(result.artifact)
+    result.data
 }
+
 fn current_graph(
     options: &model::IndexOptions,
-) -> Result<graph::RepositoryGraph, persistence::CacheError> {
+) -> Result<graph::RepositoryGraph, application::Error> {
     let artifact = current_analysis(options, false)?;
     Ok(graph::from_analysis(
         artifact.index,
@@ -122,7 +145,21 @@ fn analyze(
     command: &str,
     args: cli::AnalysisArgs,
     query: Option<&str>,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<String, application::Error> {
+    let app = application::Application::from(model::IndexOptions {
+        root: args.path.clone(),
+        max_parse_file_bytes: args.max_parse_file_size,
+        probe_git: true,
+    });
+    if let Some(name) = query {
+        let result = cli_outcome(app.symbol(name)?);
+        return Ok(match args.format {
+            Format::Human => output::index::symbol_human(&result),
+            Format::Json => {
+                output::bounded_json(&output::index::symbol_dto(&result), output::MAX_JSON_BYTES)?
+            }
+        });
+    }
     let index = current_analysis(
         &model::IndexOptions {
             root: args.path,
@@ -138,10 +175,7 @@ fn analyze(
     })
 }
 
-fn graph_query(
-    command: &str,
-    args: cli::GraphQueryArgs,
-) -> Result<String, Box<dyn std::error::Error>> {
+fn graph_query(command: &str, args: cli::GraphQueryArgs) -> Result<String, application::Error> {
     graph_command(
         command,
         args.analysis,
@@ -152,7 +186,7 @@ fn graph_command(
     command: &str,
     args: cli::AnalysisArgs,
     query: Option<(&str, Option<&std::path::Path>, u8)>,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<String, application::Error> {
     let graph = current_graph(&model::IndexOptions {
         root: args.path,
         max_parse_file_bytes: args.max_parse_file_size,
@@ -183,10 +217,14 @@ fn options(args: &cli::AnalysisArgs) -> model::IndexOptions {
         probe_git: false,
     }
 }
-fn search_command(args: cli::SearchArgs) -> Result<String, Box<dyn std::error::Error>> {
-    query::validate_query(&args.query)?;
-    let index = current_analysis(&options(&args.analysis), false)?.index;
-    let result = query::search(&index, &args.query, args.kind.into(), args.limit as usize)?;
+fn search_command(args: cli::SearchArgs) -> Result<String, application::Error> {
+    let application::Search { index, result } = cli_outcome(
+        application::Application::from(options(&args.analysis)).search(
+            &args.query,
+            args.kind.into(),
+            args.limit as usize,
+        )?,
+    );
     Ok(match args.analysis.format {
         Format::Human => {
             output::query::search_human(&index, &args.query, args.kind.into(), &result)
@@ -194,29 +232,17 @@ fn search_command(args: cli::SearchArgs) -> Result<String, Box<dyn std::error::E
         Format::Json => output::query::search_json(&index, &args.query, args.kind.into(), &result)?,
     })
 }
-fn neighborhood_command(args: cli::NeighborhoodArgs) -> Result<String, Box<dyn std::error::Error>> {
-    if let Some(file) = &args.file
-        && (file.as_os_str().is_empty()
-            || file
-                .components()
-                .any(|c| !matches!(c, std::path::Component::Normal(_))))
-    {
-        return Err(
-            "file selector must be an exact scan-root-relative path without . or .. components"
-                .into(),
-        );
-    }
-    let selector = args
-        .symbol
-        .as_deref()
-        .map(str::to_owned)
-        .unwrap_or_else(|| args.file.as_ref().unwrap().to_string_lossy().into_owned());
-    let g = current_graph(&options(&args.analysis))?;
-    let result = g.query(
-        graph::QueryKind::Neighborhood,
-        &selector,
-        args.file.as_deref(),
-        args.depth,
+fn neighborhood_command(args: cli::NeighborhoodArgs) -> Result<String, application::Error> {
+    let application::Neighborhood {
+        graph: g,
+        selector,
+        result,
+    } = cli_outcome(
+        application::Application::from(options(&args.analysis)).neighborhood(
+            args.symbol.as_deref(),
+            args.file.as_deref(),
+            args.depth,
+        )?,
     );
     Ok(match args.analysis.format {
         Format::Human => output::query::neighborhood_human(&g, &selector, &result),
@@ -225,7 +251,7 @@ fn neighborhood_command(args: cli::NeighborhoodArgs) -> Result<String, Box<dyn s
         }
     })
 }
-fn hotspots_command(args: cli::HotspotArgs) -> Result<String, Box<dyn std::error::Error>> {
+fn hotspots_command(args: cli::HotspotArgs) -> Result<String, application::Error> {
     let g = current_graph(&options(&args.analysis))?;
     let result = query::hotspots(&g, args.limit as usize)?;
     Ok(match args.analysis.format {
@@ -234,7 +260,7 @@ fn hotspots_command(args: cli::HotspotArgs) -> Result<String, Box<dyn std::error
     })
 }
 
-fn write_output(rendered: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn write_output(rendered: &str) -> Result<(), application::Error> {
     let mut stdout = io::stdout().lock();
     match writeln!(stdout, "{rendered}") {
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
@@ -274,42 +300,43 @@ fn change_command(
     command: &str,
     args: cli::ChangeArgs,
     depth: Option<u8>,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let set = change::analyze(
-        &args.analysis.path,
-        &args.range,
-        args.analysis.max_parse_file_size,
-        depth,
-    )?;
+) -> Result<String, application::Error> {
+    let set = if let Some(depth) = depth {
+        application::Application::from(options(&args.analysis)).impact(&args.range, depth)?
+    } else {
+        change::analyze(
+            &args.analysis.path,
+            &args.range,
+            args.analysis.max_parse_file_size,
+            depth,
+        )?
+    };
     Ok(match args.analysis.format {
         Format::Human => output::change::human(command, &set)?,
         Format::Json => output::change::json(command, &set)?,
     })
 }
 
-fn context_command(args: cli::ContextArgs) -> Result<String, Box<dyn std::error::Error>> {
-    let task = context::Task::parse(&args.task)?;
-    context::validate_budget(args.budget)?;
+fn context_command(args: cli::ContextArgs) -> Result<String, application::Error> {
     let mut opts = options(&args.analysis);
     opts.probe_git = true;
-    let g = current_graph(&opts)?;
-    let changes = args
-        .change
-        .as_deref()
-        .map(|range| context::compatible_change(&g, range, args.analysis.max_parse_file_size))
-        .transpose()?;
-    let ranking = context::rank(&g, &task, changes.as_ref());
-    let bundle = context::select(&g, ranking, args.budget);
-    if let Some(changes) = &changes {
-        context::recheck_snapshot(&g, &changes.head)?;
-    }
+    let application::Context {
+        graph: g,
+        task,
+        bundle,
+        changes,
+    } = cli_outcome(application::Application::from(opts).context(
+        &args.task,
+        args.budget,
+        args.change.as_deref(),
+    )?);
     Ok(match args.analysis.format {
         Format::Human => output::context::human(&g, &task, &bundle, changes.as_ref())?,
         Format::Json => output::context::json(&g, &task, &bundle, changes.as_ref())?,
     })
 }
 
-fn watch_command(args: cli::WatchArgs) -> Result<(), Box<dyn std::error::Error>> {
+fn watch_command(args: cli::WatchArgs) -> Result<(), application::Error> {
     let root = args.path.canonicalize()?;
     let options = model::IndexOptions {
         root: root.clone(),
@@ -350,4 +377,12 @@ fn watch_command(args: cli::WatchArgs) -> Result<(), Box<dyn std::error::Error>>
             update();
         }
     }
+}
+
+fn runtime() -> Result<tokio::runtime::Runtime, application::Error> {
+    Ok(tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(4)
+        .enable_all()
+        .build()?)
 }

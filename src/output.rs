@@ -379,7 +379,7 @@ mod tests {
 }
 
 #[path = "output_index.rs"]
-mod index;
+pub(crate) mod index;
 pub use index::{human as index_human, json as index_json};
 
 #[path = "output_graph.rs"]
@@ -387,8 +387,11 @@ mod graph;
 pub use graph::{human as graph_human, json as graph_json};
 
 // Serialize into a bounded buffer before stdout: failure cannot emit partial JSON.
-const MAX_JSON_BYTES: usize = 64 * 1024 * 1024;
-fn bounded_json(value: &impl Serialize, limit: usize) -> Result<String, serde_json::Error> {
+pub(crate) const MAX_JSON_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) fn bounded_json(
+    value: &impl Serialize,
+    limit: usize,
+) -> Result<String, serde_json::Error> {
     struct Buffer {
         bytes: Vec<u8>,
         limit: usize,

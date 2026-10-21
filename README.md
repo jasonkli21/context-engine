@@ -12,7 +12,7 @@ The project is intentionally **descriptive rather than normative**. It aims to m
 
 ## Status
 
-**Pre-alpha / Phase 8 implemented; fresh independent review pending.**
+**Pre-alpha / Phase 9 implemented; independent review pending.**
 The synchronous CLI scans repositories, indexes Rust/Python symbols, and builds a
 canonical in-memory graph of lexical containment, imports and call-site references,
 incrementally reconciling a validated external analysis cache after fresh inventory/content checks.
@@ -23,7 +23,8 @@ parent `.gitignore` and `.ignore` controls for nested scan roots, with a bounded
 reading checkout source or changing the current-state cache.
 Phase 7 and Phase 6 review findings have been addressed in a single follow-up commit; independent
 re-review and earlier pending phase dispositions remain pending. Phase 0 was accepted
-on 2026-10-14. Async, MCP, embeddings and model calls remain future work.
+on 2026-10-14. `ctx serve` and `ctx mcp` share synchronous application use cases
+with the CLI. Embeddings and model calls remain future work.
 
 See [`docs/current-state.md`](docs/current-state.md) for implementation and review status.
 
@@ -546,7 +547,7 @@ not an identity for exact dirty working-tree content.
 
 The standalone bounded `history` and `evolution` commands, including same-commit
 co-change evidence, are implemented. Later phases may connect those signals to
-context ranking and add service adapters or cross-repository context; those
+context ranking and add cross-repository context; those
 integrations are not implemented.
 
 ## Why Rust?
@@ -596,6 +597,107 @@ The roadmap intentionally progresses from ownership and `Result` handling, throu
 ```
 
 The documentation layout is intentionally designed for human and LLM development. Start with the smallest relevant context set rather than loading the entire repository narrative into every session. [`docs/README.md`](docs/README.md) defines the reading routes and source-of-truth hierarchy.
+
+## Local HTTP and coding agents
+
+`serve` pins one canonical directory for the process. Generate a private token in
+the launching shell; do not paste a real token into configuration, URLs or argv:
+
+```bash
+export CONTEXT_ENGINE_SERVE_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+./target/release/ctx serve /absolute/path/to/repo --listen 127.0.0.1:0
+```
+
+Startup prints only `ctx: listening http://127.0.0.1:PORT` to stderr. Use that exact
+IP and port as the authority. Public/wildcard bindings are rejected. IPv6 loopback
+is accepted but has not been executed locally. All Origin headers are rejected;
+CORS is disabled. Intelligence routes require `Authorization: Bearer TOKEN`.
+`GET /health` returns only API version/status without authentication.
+
+All intelligence operations use **POST** with exactly `Content-Type: application/json`,
+no URL query parameters, and a JSON object. POST expresses a read-only query; it
+cannot edit source or invoke repository code. Only the external derivative cache
+may be reconciled. Unknown/duplicate JSON fields and invalid types are rejected.
+
+| Route | JSON arguments | MCP tool | CLI |
+| --- | --- | --- | --- |
+| `/v1/search` | `query`, optional `kind` (`all`, `symbol`, `file`), `limit` (1–200, default 20) | `search_codebase` | `search` |
+| `/v1/symbol` | `name` | `find_symbol` | `symbol` |
+| `/v1/neighborhood` | exactly one `symbol` or relative `file`; `depth` (0–8, default 1) | `get_dependency_neighborhood` | `neighborhood` |
+| `/v1/impact` | `range` (`BASE..HEAD`); `depth` (0–8, default 1) | `get_change_impact` | `impact` |
+| `/v1/context` | `task`, `budget` (1–1048576 UTF-8 content bytes), optional `change` | `build_task_context` | `context` |
+
+For example, replace `PORT` with the printed port:
+
+```bash
+curl --fail-with-body http://127.0.0.1:PORT/v1/search \
+  -H "Authorization: Bearer $CONTEXT_ENGINE_SERVE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data '{"query":"snapshot","kind":"symbol","limit":10}'
+```
+
+Successful responses are `{ "api_version": 1, "state": "...", "warnings": [],
+"result": { "schema_version": 1, "command": "...", "data": {} } }`. The nested
+result uses the same DTO as existing CLI JSON, preserving ordering, explanations,
+ambiguity, coverage and truncation. `state` is `current_working_tree_best_effort`
+or `committed_revisions`. Current queries reconcile each time; this is not an
+atomic filesystem snapshot. Impact reads committed Git objects even on dirty
+checkouts. IDs remain index/revision-local. Non-UTF-8 textual selectors are not
+available; existing lossy-path/coverage reporting is preserved.
+
+Errors use `{ "api_version": 1, "error": { "code": "..." } }`, with an optional
+fixed message. HTTP statuses: 400 invalid input, 401 authentication, 403 unsafe
+authority/origin, 404 route, 405 method, 408 body timeout, 413 request/response
+limit, 415 content type, 422 unavailable repository/Git query, 503 busy, 504 query
+timeout, 500 internal failure. Errors redact underlying paths and diagnostics.
+All adapter responses carry `Cache-Control: no-store`; HTTP parser-level errors
+can occur before the application handler. No request headers or bodies are logged.
+
+Limits: 16 KiB request/frame, 8 MiB response, 1 MiB context content budget,
+32 HTTP connections with a 45-second maximum lifetime, 16 body readers,
+10-second body deadline, one admitted blocking job, no analysis queue, and a
+30-second HTTP query deadline. Overload returns immediately. Disconnect/timeout
+does not cancel blocking Git/SQLite/analysis work or release its permit early.
+SIGINT/SIGTERM stops acceptance, allows five seconds for HTTP connections, and
+then waits for the admitted blocking job. That final wait has no hard deadline.
+The core algorithms have resource bounds, but filesystem/Git I/O can still stall.
+`watch` is not launched by either adapter.
+
+MCP uses the official Rust SDK **rmcp 3.6.0**, pinned to **2026-07-28 only**.
+It uses per-request version/capability metadata and `server/discover`; there is no
+`initialize` handshake or legacy 2025 support. Use a client supporting that revision:
+
+```json
+{
+  "mcpServers": {
+    "context-engine": {
+      "command": "/absolute/path/to/context-engine/target/release/ctx",
+      "args": ["mcp", "/absolute/path/to/repo"]
+    }
+  }
+}
+```
+
+The client owns stdio trust; MCP does not use the HTTP bearer token. Stdout contains
+only newline-delimited UTF-8 protocol messages. Runtime input validation enforces
+the published tool constraints. Unknown tools/invalid arguments are protocol
+errors; valid queries that fail return `isError: true`. The SDK drops malformed
+JSON syntax/oversized lines and continues; well-formed invalid frames receive
+protocol errors. The stdio adapter caps outstanding requests at 16 and gives stdout writes ten
+seconds. Exceeding the cap or reusing an outstanding ID closes the transport.
+Cancelled requests without responses conservatively retain a slot until process
+exit; clients issuing many cancellations should reconnect. EOF closes the adapter
+and drains the admitted job. Cancellation
+is best effort; an already running blocking computation still finishes.
+
+Both transports expose sensitive source and repository metadata to their trusted
+consumer. Context includes full files. Local same-user processes and the launching
+user are inside the trust boundary; loopback is not a multi-user security sandbox.
+Keep bearer secrets private and grant MCP access only to trusted clients.
+The existing scanner ignores/generated/vendor exclusions and safe source loader
+remain authoritative. Cache location is launch-owned and stays outside the root.
+See the [Phase 9 report](docs/reports/phase-9-implementation-report.md) for executed
+interoperability/security checks and limitations. Prior phase reviews remain pending.
 
 ## Development
 
