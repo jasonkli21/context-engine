@@ -201,3 +201,32 @@ impl From<model::IndexOptions> for Application {
         Self { options }
     }
 }
+
+/// Trusted local multi-root launch use cases. Deliberately absent from adapter requests.
+pub fn workspace_inspect(manifest: &Path) -> Result<crate::workspace::Workspace> {
+    crate::workspace::inspect(manifest)
+}
+pub fn workspace_impact(
+    manifest: &Path,
+    provider: &str,
+    range: &str,
+    depth: u8,
+) -> Result<(crate::workspace::Workspace, crate::workspace_impact::Impact)> {
+    crate::workspace_impact::analyze(manifest, provider, range, depth)
+}
+
+pub fn workspace_consumers(
+    manifest: &Path,
+    repo: &str,
+    path: Option<&str>,
+) -> Result<crate::workspace::Workspace> {
+    if let Some(path) = path {
+        crate::workspace::selector(path)?;
+    }
+    let mut w = workspace_inspect(manifest)?;
+    w.repo(repo)?;
+    w.relations.retain(|e| {
+        e.provider == repo && path.is_none_or(|p| e.provider_path.as_deref() == Some(p))
+    });
+    Ok(w)
+}

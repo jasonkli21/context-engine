@@ -12,6 +12,12 @@ pub fn load(root: &Path, relative: &Path, max: u64) -> Result<String, AnalysisSt
 }
 
 pub(crate) fn load_raw(root: &Path, relative: &Path, max: u64) -> Result<Vec<u8>, AnalysisStatus> {
+    bounded_bytes(open_checked(root, relative, max)?, max)
+}
+
+/// Validate and open an exact regular file without following symlink components.
+/// Callers checking declarations can drop the handle without reading file bodies.
+pub(crate) fn open_checked(root: &Path, relative: &Path, max: u64) -> Result<File, AnalysisStatus> {
     if relative.as_os_str().is_empty()
         || relative
             .components()
@@ -75,7 +81,7 @@ pub(crate) fn load_raw(root: &Path, relative: &Path, max: u64) -> Result<Vec<u8>
     if opened.len() > max {
         return Err(AnalysisStatus::TooLarge);
     }
-    bounded_bytes(file, max)
+    Ok(file)
 }
 #[cfg(test)]
 fn bounded_utf8(reader: impl Read, max: u64) -> Result<String, AnalysisStatus> {

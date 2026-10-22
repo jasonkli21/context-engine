@@ -17,6 +17,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Inspect local cross-repository candidate consumer evidence.
+    Workspace(WorkspaceArgs),
     /// Serve authenticated read-only HTTP on a loopback IP.
     Serve(ServeArgs),
     /// Serve read-only MCP 2026-07-28 over stdio (protocol stdout only).
@@ -245,4 +247,39 @@ pub struct ServeArgs {
 pub struct McpArgs {
     #[arg(default_value = ".")]
     pub path: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct WorkspaceArgs {
+    #[command(subcommand)]
+    pub command: WorkspaceCommand,
+}
+#[derive(Debug, Args)]
+pub struct WorkspaceCommon {
+    #[arg(long)]
+    pub manifest: PathBuf,
+    #[arg(long, value_enum, default_value = "human")]
+    pub format: Format,
+}
+#[derive(Debug, Subcommand)]
+pub enum WorkspaceCommand {
+    Inspect(WorkspaceCommon),
+    Consumers {
+        #[command(flatten)]
+        common: WorkspaceCommon,
+        #[arg(long)]
+        repo: String,
+        #[arg(long)]
+        path: Option<String>,
+    },
+    Impact {
+        #[command(flatten)]
+        common: WorkspaceCommon,
+        #[arg(long)]
+        repo: String,
+        #[arg(long)]
+        change: String,
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=3))]
+        depth: u8,
+    },
 }

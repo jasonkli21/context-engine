@@ -2,11 +2,23 @@
 
 **Last updated:** 2026-10-21
 
-**Active phase:** Phase 9 — Local Service + Agent Adapter
+**Active phase:** Phase 10 — Cross-Repository Intelligence
 
-**Overall status:** Phase 9 implemented; local verification recorded below; independent review required
+**Overall status:** Phase 10 implemented locally; independent Phase 10 review and maintainer acceptance pending
 
 ## Delivered
+
+- Phase 10 adds invocation-local strict manifest v1 registration, native canonical
+  root containment, stable logical repo identities, observed static Cargo root
+  path/package relationships and declared API/event file mappings. CLI `workspace
+  inspect`, `workspace consumers` and `workspace impact` use transport-neutral
+  application functions and separate bounded workspace JSON v1/human rendering.
+- Committed Git diff sides trigger exact declared contract candidates, including
+  delete/rename paths, and coarse source/package candidates. Deterministic bounded
+  package-only downstream traversal exposes witnesses, alternate/depth omissions
+  and current consumer HEAD/dirty/unknown mixed-time evidence. Unsupported sources
+  and unavailable endpoints are explicit coverage gaps. HTTP/MCP/cache contracts
+  remain unchanged. See the [Phase 10 report](reports/phase-10-implementation-report.md).
 
 - Phase 9 adds a synchronous application seam for search, exact symbol lookup,
   neighborhood, committed impact and full-file task context. CLI, HTTP and MCP
@@ -158,6 +170,15 @@ Evidence: [Phase 5 review-fix report](reports/phase-5-review-fix-report.md),
 
 ## Acceptance and verification
 
+- The maintainer directly authorized Phase 10 from `39c87cfa` and requested one
+  implementation commit, without subagents. The pre-existing untracked Phase 10
+  plan was read and preserved outside the commit. Canonical verification passed
+  locally with 109 unit / 89 integration tests, including HTTP/MCP regressions;
+  all-target check, release build and multi-repo release smokes passed. Details are
+  in the [Phase 10 report](reports/phase-10-implementation-report.md). Independent
+  Phase 10 review and maintainer acceptance remain pending; prior dispositions
+  are unchanged.
+
 - The maintainer directly authorized Phase 9 from `6693892`, despite pending Phase 8
   and earlier reviews, and requested one commit. This authorizes implementation,
   not acceptance. Canonical verification passed locally: formatting, Clippy,
@@ -269,12 +290,22 @@ Evidence: [Phase 5 review-fix report](reports/phase-5-review-fix-report.md),
 
 ## Known limitations
 
+Phase 10 is a trusted local CLI registry, not a multi-root service or atomic
+snapshot. Root Cargo packages only; no workspace/member discovery, feature/version
+resolution, runtime API inference, custom Cargo build-input modeling or source
+bundles. Package triggers use the existing source-role classifier plus Cargo.toml
+and build.rs. Declared file availability does not prove use; current relationships
+and committed provider changes have mixed time bases. Depth is at most three;
+only one witness per repo is retained. Text selectors cannot target non-UTF-8
+names, and omissions are counted. Hard bounds can reject a command. No new
+persistence, HTTP/MCP operation or Phase 11 integration exists.
+
 Phase 9 is local, single-root and serialized. Adapter context budgets stop at 1 MiB
 of full-file content; response limits can reject larger evidence sets. HTTP timeouts
 do not kill blocking work. Shutdown waits for that work without a hard deadline.
 MCP is 2026-07-28 only; no legacy or HTTP MCP. Its 16 outstanding-response slots
-include cancelled calls that produce no response, so repeated cancellations may
-require reconnecting. Same-user/token-authorized HTTP clients and stdio clients
+are released by matching cancellation notifications; blocking work retains its
+independent permit until completion. Same-user/token-authorized HTTP clients and stdio clients
 can obtain sensitive repository metadata/source; this is not a multi-user sandbox.
 No third-party MCP client, IPv6, Linux/Windows or external deployment execution is
 claimed. Native textual selectors retain existing UTF-8/lossy-path limitations.
@@ -297,8 +328,8 @@ rebuilds from a fresh live scan. Explicit `index` fails and incomplete results a
 never persisted. All cache writers share a bounded per-cache sidecar lock; complete
 filesystem snapshots remain absent. Watch monitors parent `.gitignore` and `.ignore`
 controls for nested roots and performs a canonical full reconciliation at least
-every 60 seconds to recover from missed backend events. There is no persisted event log or
-service/query server. Windows/native-wide support is implemented but
+every 60 seconds to recover from missed backend events. There is no persisted event log; Phase 9 supplies the local
+single-root service. Windows/native-wide support is implemented but
 not locally executed; non-UTF-8 store tests use injected native inventory records.
 
 Phase 5 packs complete files under a byte budget, not tokens/snippets. With
@@ -336,6 +367,11 @@ reported in query coverage. Existing parse recovery, scanner/Git limitations and
 filesystem TOCTOU races remain; results are not atomic snapshots.
 
 ## Next step
+
+Fresh independent Phase 10 review of registry/path identity, observed/declared
+precision, committed trigger semantics, mixed-time provenance, bounded traversal,
+output contracts and production integration. Review and maintainer acceptance
+remain pending.
 
 Fresh independent Phase 9 re-review of MCP interoperability, HTTP local security,
 blocking/response ownership, cache races, disclosure boundaries and evidence parity.

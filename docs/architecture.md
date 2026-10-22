@@ -971,3 +971,49 @@ machine output is versioned
 ```
 
 Revise this architecture when actual code proves a boundary wrong; do not preserve speculative design merely because it was written first.
+
+
+## Phase 10 delivered workspace boundary
+
+`workspace.rs` owns strict manifest v1 validation, logical registration identities,
+canonical native root ownership, exact selectors, static root Cargo package
+relationships and declared API/event file mappings. `application.rs` exposes local
+inspect/consumers/impact use cases without transport types. `workspace_impact.rs`
+composes the existing `git::revision::Revisions` raw committed file changes with
+these relationships; it does not build a second scanner, index or Git pipeline.
+`output_workspace.rs` is a pure bounded builder/renderer for separately versioned
+workspace JSON v1 and escaped human output. CLI owns manifest selection and printing.
+HTTP/MCP request vocabularies remain single-root and unchanged.
+
+Canonical roots authorize access, while logical repo IDs survive physical moves.
+Root aliases canonicalize once; duplicate and overlapping ownership is rejected.
+File selectors reject symlinks and identity normalization. A narrow extraction of
+`source::open_checked` shares existing regular-file, no-follow and descriptor-based
+Unix opening with declaration validation; no declaration body is loaded. Native
+paths never become lossy authorization keys. Output uses repo-relative UTF-8
+selectors; native committed paths without textual representation are counted as
+omissions. No root path or source body appears in workspace evidence.
+
+Observed evidence requires exact registered path and root-package name equality;
+consumer and provider Cargo bytes have fingerprints. Declared evidence identifies
+manifest bytes and contract ID and only validates exact file availability. Neither
+proves runtime use, feature activation or compatibility. Unsupported/missing Cargo
+and unavailable endpoints are typed coverage gaps, not guessed edges. Deleted or
+renamed declared provider paths can use a regular committed diff side, with current
+consumer availability and explicit validation basis. Other relationships remain
+current working-tree observations. Optional Git metadata records HEAD/dirty/unknown
+without claiming atomicity or binding current manifests to those commits.
+
+Only source-role changes, Cargo.toml and build.rs trigger coarse package candidates;
+contracts require exact provider path changes. Breadth-first first-witness traversal
+follows package edges after its first hop, deduplicates repositories, stops at depth
+1–3 and exposes alternate/depth/resource omissions. Structural relation IDs exclude
+physical roots and byte fingerprints; witness edge indices are response-local.
+Candidates never assert breakage, authority or policy.
+
+All state is invocation-local. Manifest, repo/contract/consumer counts, endpoint
+checks, Cargo reads/dependency checks, retained edges, coverage, Git change/path
+bytes, traversal and escaped output have explicit bounds documented in README.
+No new persistence or scanner/parser/relation semantics are introduced;
+`INDEX_COMPAT_VERSION` 1, `SCHEMA_VERSION` 3 and freshness-v2 remain appropriate.
+No daemon worker, implicit neighbor enrollment, source execution or network is added.

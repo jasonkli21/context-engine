@@ -12,7 +12,7 @@ The project is intentionally **descriptive rather than normative**. It aims to m
 
 ## Status
 
-**Pre-alpha / Phase 9 implemented; independent review pending.**
+**Pre-alpha / Phase 10 implemented; independent review pending.**
 The synchronous CLI scans repositories, indexes Rust/Python symbols, and builds a
 canonical in-memory graph of lexical containment, imports and call-site references,
 incrementally reconciling a validated external analysis cache after fresh inventory/content checks.
@@ -24,7 +24,8 @@ reading checkout source or changing the current-state cache.
 Phase 7 and Phase 6 review findings have been addressed in a single follow-up commit; independent
 re-review and earlier pending phase dispositions remain pending. Phase 0 was accepted
 on 2026-10-14. `ctx serve` and `ctx mcp` share synchronous application use cases
-with the CLI. Embeddings and model calls remain future work.
+with the CLI. Local `workspace inspect`, `workspace consumers` and `workspace impact`
+add registered cross-repository candidate evidence. Embeddings and model calls remain future work.
 
 See [`docs/current-state.md`](docs/current-state.md) for implementation and review status.
 
@@ -547,8 +548,8 @@ not an identity for exact dirty working-tree content.
 
 The standalone bounded `history` and `evolution` commands, including same-commit
 co-change evidence, are implemented. Later phases may connect those signals to
-context ranking and add cross-repository context; those
-integrations are not implemented.
+context ranking. The workspace commands provide separate cross-repository
+relationship/candidate evidence; cross-repository source context bundles remain future work.
 
 ## Why Rust?
 
@@ -772,3 +773,93 @@ The core project is intended to operate locally and read-only by default. It sho
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
+
+## Local workspace intelligence
+
+Create a trusted local `ctx-workspace.json` (all object fields are strict):
+
+```json
+{
+  "schema_version": 1,
+  "workspace_id": "sample-stack",
+  "repositories": [
+    { "id": "engine", "root": "../context-engine" },
+    { "id": "client", "root": "../client-app" }
+  ],
+  "contracts": [
+    {
+      "id": "public-api",
+      "kind": "api_schema",
+      "provider": { "repo": "engine", "path": "schemas/api.yaml" },
+      "consumers": [{ "repo": "client", "path": "src/client.py" }]
+    }
+  ]
+}
+```
+
+```bash
+ctx workspace inspect --manifest ./ctx-workspace.json --format json
+ctx workspace consumers --manifest ./ctx-workspace.json --repo engine --path schemas/api.yaml --format json
+ctx workspace impact --manifest ./ctx-workspace.json --repo engine --change BASE..HEAD --depth 2 --format json
+```
+
+IDs match `[a-z][a-z0-9_-]{0,63}` and survive root relocation. Relative roots resolve
+against the manifest directory; absolute roots are also allowed. Canonical root
+symlink aliases are accepted once, but duplicate/overlapping canonical roots are
+rejected. Non-Git registrations support inspection/declarations. File selectors are
+exact UTF-8 relative files: no absolute paths, empty/dot/parent components, backslash,
+colon, symlinks (even within a root), or normalization to another file identity.
+Missing regular readable endpoints yield coverage gaps and suppress a declared edge.
+Contract kinds are `api_schema` and `event_schema`; same-repo and duplicate mappings
+are rejected. Declarations validate file availability, **not runtime usage**.
+
+Observed `cargo_path_dependency` relationships require a bounded static root
+`Cargo.toml`, an ordinary direct `[dependencies]` path resolving exactly to another
+registered root, and an equal package name (`package` supports aliases). No Cargo
+command or source code runs. Optional dependencies are potential declarations;
+feature activation and version compatibility are not proved. Workspace packages,
+workspace inheritance, target/dev/build scopes, registry dependencies, patches,
+unregistered subpackages, invalid/unreadable manifests and unsupported values are
+explicit coverage gaps. Both observed manifests carry actual byte fingerprints;
+workspace declarations identify the manifest fingerprint and contract ID locator.
+
+Impact reuses immutable two-dot Git diff evidence, including both rename/delete
+sides and nested root scopes. Exact changed regular contract paths yield declared
+candidates, including deleted provider files evidenced in the committed base when
+consumer files remain readable. Package candidates require a changed regular
+`Cargo.toml`, `build.rs`, or file classified as source by the existing classifier;
+docs/tests/configuration/schema changes alone do not trigger a package candidate.
+This coarse rule does not model Cargo packaging or custom build inputs. Further
+hops follow only supported package edges, never another declaration automatically.
+Depth is 1–3. Candidates deduplicate by logical repo; breadth-first traversal takes
+the first witness in provider/consumer/kind/path/contract/locator order and reports
+alternate witnesses and depth-limited edges. Witness indices reference that
+response's sorted relations; relation IDs hash structural evidence keys, not roots.
+
+Workspace JSON uses `workspace_schema_version: 1`, separately from existing CLI
+and adapter schemas. It includes committed base/head, both-sided trigger paths,
+provenance, coverage, first witness chains, and best-effort HEAD/dirty/unknown per
+registration. Relationship evidence comes from **current working trees**, even
+when provider changes are committed. This mixed time basis is not an atomic
+multi-repository snapshot or a breaking-change verdict. Zero candidates means no
+supported match within coverage. Text selectors cannot represent non-UTF-8 names;
+committed non-UTF-8 path omissions are counted without lossy matching.
+
+Limits: 1 MiB manifest; 16 repos; 256 contracts; 1,024 consumer mappings and
+1,024 examined Cargo dependencies across the workspace; 256 KiB per Cargo manifest
+(4 MiB aggregate); 1,024 validated relations; 4,096 coverage records; 4,096-byte
+selectors with components at most 255 bytes; 4,096 traversal edge examinations;
+and 8 MiB escaped output. Git retains its existing 10,000-change / 4 MiB path /
+16 MiB diff limits. At most 2,048 declaration endpoint opens occur, plus 16 Cargo
+opens; bodies are not read for declarations. Input/identity, aggregate and Git
+limit failures fail without stdout; per-Cargo missing/oversized/unsupported data
+is incomplete usable evidence. Traversal/depth/alternate-witness omissions are data.
+
+The CLI reads only registered local roots and never writes into them. Output omits
+absolute roots and file bodies. Git metadata and files can change during a command;
+filesystem operations retain existing platform/race limitations. Workspace use
+cases are synchronous and invocation-local: no registry database, watcher, network,
+clone, or implicit enrollment. HTTP and MCP remain single-root with the same five
+operations. Multi-root adapters, source bundles and the Context Integrity adapter
+are deferred. Review and maintainer acceptance remain pending; see the
+[Phase 10 implementation report](docs/reports/phase-10-implementation-report.md).

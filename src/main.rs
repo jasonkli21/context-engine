@@ -12,6 +12,7 @@ mod language;
 mod mcp;
 mod model;
 mod output;
+mod output_workspace;
 mod paths;
 mod persistence;
 mod query;
@@ -21,6 +22,8 @@ mod service;
 mod source;
 mod store;
 mod watch;
+mod workspace;
+mod workspace_impact;
 
 use crate::{
     cli::{Cli, Command, Format, PathArgs, TreeArgs},
@@ -35,6 +38,7 @@ use std::{
 fn run() -> Result<(), application::Error> {
     let cli = Cli::parse();
     let rendered = match cli.command {
+        Command::Workspace(args) => workspace_command(args)?,
         Command::Serve(args) => {
             let app = application::Application::pinned(&args.path)?;
             let token = std::env::var("CONTEXT_ENGINE_SERVE_TOKEN")
@@ -385,4 +389,53 @@ fn runtime() -> Result<tokio::runtime::Runtime, application::Error> {
         .max_blocking_threads(4)
         .enable_all()
         .build()?)
+}
+
+fn workspace_command(args: cli::WorkspaceArgs) -> application::Result<String> {
+    use cli::WorkspaceCommand;
+    let (command, common, repo, path, range) = match args.command {
+        WorkspaceCommand::Inspect(a) => ("inspect", a, None, None, None),
+        WorkspaceCommand::Consumers { common, repo, path } => {
+            ("consumers", common, Some(repo), path, None)
+        }
+        WorkspaceCommand::Impact {
+            common,
+            repo,
+            change,
+            depth,
+        } => ("impact", common, Some(repo), None, Some((change, depth))),
+    };
+    let (w, impact) = if let Some((range, depth)) = range {
+        let (w, i) = application::workspace_impact(
+            &common.manifest,
+            repo.as_deref().unwrap(),
+            &range,
+            depth,
+        )?;
+        (w, Some(i))
+    } else {
+        (
+            if command == "consumers" {
+                application::workspace_consumers(
+                    &common.manifest,
+                    repo.as_deref().unwrap(),
+                    path.as_deref(),
+                )?
+            } else {
+                application::workspace_inspect(&common.manifest)?
+            },
+            None,
+        )
+    };
+    let d = output_workspace::document(
+        &w,
+        command,
+        repo.as_deref(),
+        path.as_deref(),
+        impact.as_ref(),
+    )?;
+    match common.format {
+        Format::Json => output_workspace::json(&d),
+        Format::Human => output_workspace::human(&d),
+    }
 }
