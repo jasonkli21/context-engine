@@ -17,10 +17,16 @@
   and exposes health plus five read-only v1 operations. Connections, readers,
   bodies, responses and deadlines are bounded. One completion-owned blocking
   permit survives caller timeout/disconnect; current queries reconcile each time.
+  Search/neighborhood skip Git metadata probes to match CLI. Context excludes
+  conventional credential filenames and reports the omission count. Adapter
+  replies include versioned Git/freshness provenance without claiming atomicity.
+  Git subprocesses are limited to 15 seconds; filesystem stalls can still delay
+  requests and shutdown indefinitely.
 - `ctx mcp` exposes the same five operations over stdio using official rmcp 3.6.0,
   MCP 2026-07-28 only, modern metadata/discovery and no initialize handshake.
   A narrow metadata guard/direct SDK service avoids dual-era bootstrap assumptions.
-  Frame/output limits and outstanding-response bounds apply; stdout is protocol-only.
+  Bounded framing returns malformed-JSON parse errors; cancellation releases
+  matching response slots. Frame/output limits apply; stdout is protocol-only.
 - The existing cache/schema/analysis versions and descriptive boundary are unchanged.
   Phase 9 also repairs inherited Phase 8 compile/test fixture errors discovered by
   executable regression verification. See the [Phase 9 report](reports/phase-9-implementation-report.md)
@@ -331,8 +337,11 @@ filesystem TOCTOU races remain; results are not atomic snapshots.
 
 ## Next step
 
-Fresh independent Phase 9 review of MCP interoperability, HTTP local security,
+Fresh independent Phase 9 re-review of MCP interoperability, HTTP local security,
 blocking/response ownership, cache races, disclosure boundaries and evidence parity.
+The attached findings were addressed in the [Phase 9 review-fix report](reports/phase-9-review-fix-report.md);
+implementation evidence does not constitute Phase 9 acceptance. A strict shutdown
+deadline remains unsupported while Git/filesystem work runs in-process.
 Fresh independent Phase 8 review of immutable history, lineage, scope, bounds and
 production integration. Fresh independent Phase 7 review of incremental storage, freshness, races, watcher
 ownership and integration. Phase 6 fresh re-review remains pending.

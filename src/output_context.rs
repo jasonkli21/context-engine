@@ -115,6 +115,7 @@ struct CoverageDto {
     files_considered: usize,
     files_eligible: usize,
     excluded_roles: usize,
+    sensitive_files_omitted: usize,
     task_terms: usize,
     task_terms_truncated: bool,
     lexical_non_utf8_path_omissions: usize,
@@ -137,6 +138,7 @@ fn coverage(g: &RepositoryGraph, t: &Task, b: &Bundle) -> CoverageDto {
         files_considered: g.index.files.len(),
         files_eligible: b.ranking.eligible,
         excluded_roles: g.index.files.len() - b.ranking.eligible,
+        sensitive_files_omitted: b.ranking.sensitive_files_omitted,
         task_terms: t.terms.len(),
         task_terms_truncated: t.terms_truncated,
         lexical_non_utf8_path_omissions: g
@@ -288,7 +290,7 @@ pub fn human(
         writeln!(out,"Change: {} ({}..{}); files observed/mapped: {}/{}; symbols observed/mapped/unmapped: {}/{}/{}; deleted-only entities: {}", escape_controls(&c.range), c.base, c.head, c.files_observed,c.files.len(),c.symbols_observed,c.symbols_mapped,c.symbols_unmapped,c.deleted_only).unwrap();
     }
     let cv = coverage(g, t, b);
-    writeln!(out,"Coverage: files={} eligible={} excluded_roles={} terms={} terms_truncated={} non_utf8_path_omissions={} roots={} omitted_roots={} graph_truncated={} fallback_omitted={} load_failures={} load_attempts={} load_bytes_reserved={} load_safety_limited={} load_candidates_omitted={} budget_skips={} unreported_skips={} selection_omitted={}",cv.files_considered,cv.files_eligible,cv.excluded_roles,cv.task_terms,cv.task_terms_truncated,cv.lexical_non_utf8_path_omissions,cv.ranking_roots,cv.ranking_roots_omitted,cv.graph_truncated,cv.fallback_candidates_omitted,cv.content_load_failures,cv.content_load_attempts,cv.content_load_bytes_reserved,cv.content_load_safety_limited,cv.content_load_candidates_omitted,cv.budget_skips,cv.skips_omitted,cv.selection_candidates_omitted).unwrap();
+    writeln!(out,"Coverage: files={} eligible={} excluded_roles={} sensitive_files_omitted={} terms={} terms_truncated={} non_utf8_path_omissions={} roots={} omitted_roots={} graph_truncated={} fallback_omitted={} load_failures={} load_attempts={} load_bytes_reserved={} load_safety_limited={} load_candidates_omitted={} budget_skips={} unreported_skips={} selection_omitted={}",cv.files_considered,cv.files_eligible,cv.excluded_roles,cv.sensitive_files_omitted,cv.task_terms,cv.task_terms_truncated,cv.lexical_non_utf8_path_omissions,cv.ranking_roots,cv.ranking_roots_omitted,cv.graph_truncated,cv.fallback_candidates_omitted,cv.content_load_failures,cv.content_load_attempts,cv.content_load_bytes_reserved,cv.content_load_safety_limited,cv.content_load_candidates_omitted,cv.budget_skips,cv.skips_omitted,cv.selection_candidates_omitted).unwrap();
     for s in &b.selected {
         let f = &g.index.files[s.candidate.file];
         writeln!(

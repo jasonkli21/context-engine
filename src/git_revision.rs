@@ -4,6 +4,8 @@ use std::{
     io::Read,
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -81,23 +83,37 @@ fn bounded(mut c: Command, max: usize, operation: &'static str) -> Result<Vec<u8
         .stderr(Stdio::null())
         .stdin(Stdio::null())
         .spawn()?;
-    let mut bytes = Vec::new();
-    let read = child
-        .stdout
-        .take()
-        .ok_or(Error::Git(operation))?
-        .take(max.saturating_add(1) as u64)
-        .read_to_end(&mut bytes);
-    if read.is_err() || bytes.len() > max {
-        let _ = child.kill();
-        let _ = child.wait();
-        read?;
-        return Err(Error::Limit(operation));
+    let stdout = child.stdout.take().ok_or(Error::Git(operation))?;
+    let reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = stdout
+            .take(max.saturating_add(1) as u64)
+            .read_to_end(&mut bytes);
+        (bytes, result)
+    });
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            let (bytes, read) = reader.join().map_err(|_| Error::Git(operation))?;
+            read?;
+            if bytes.len() > max {
+                return Err(Error::Limit(operation));
+            }
+            if !status.success() {
+                return Err(Error::Git(operation));
+            }
+            return Ok(bytes);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Git operation exceeded 15 seconds",
+            )));
+        }
+        thread::sleep(Duration::from_millis(10));
     }
-    if !child.wait()?.success() {
-        return Err(Error::Git(operation));
-    }
-    Ok(bytes)
 }
 fn run(root: &Path, args: &[&str], max: usize, op: &'static str) -> Result<Vec<u8>, Error> {
     let mut c = command(root);

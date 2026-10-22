@@ -89,7 +89,12 @@ async fn handle(s: Service, request: Request) -> Response {
     let path = request.uri().path();
     if path == "/health" {
         return if request.method() == "GET" {
-            axum::Json(json!({"api_version":1,"status":"ok"})).into_response()
+            axum::Json(json!({
+                "api_version":1,
+                "status":"ok",
+                "readiness": if s.worker.ready() { "ready" } else { "busy" }
+            }))
+            .into_response()
         } else {
             error(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed")
         };

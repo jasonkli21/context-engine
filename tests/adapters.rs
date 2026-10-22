@@ -77,6 +77,41 @@ impl Repo {
         serde_json::from_slice(&output.stdout).unwrap()
     }
 }
+
+#[test]
+fn search_and_neighborhood_skip_git_metadata_probes_across_cli_and_service() {
+    let repo = Repo::new();
+    assert!(
+        Command::new("git")
+            .args(["config", "--local", "filter.ce9.clean", "/bin/true"])
+            .current_dir(&repo.root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let http = Http::start(&repo.root, &repo.cache);
+    for (route, args, cli) in [
+        (
+            "/v1/search",
+            json!({"query":"target"}),
+            vec!["search", "target"],
+        ),
+        (
+            "/v1/neighborhood",
+            json!({"symbol":"target"}),
+            vec!["neighborhood", "--symbol", "target"],
+        ),
+    ] {
+        let expected = repo.cli(&cli);
+        let actual = http.call(route, args);
+        assert_eq!(actual["result"], expected);
+        assert_eq!(actual["warnings"], json!([]));
+        assert_eq!(
+            actual["result"]["data"]["coverage"]["scan_warning_count"],
+            0
+        );
+    }
+}
 struct Http {
     child: Child,
     address: String,
@@ -172,6 +207,15 @@ async fn cli_http_and_real_mcp_client_parity_and_freshness() {
     for t in &list.tools {
         assert_eq!(t.input_schema["additionalProperties"], false);
     }
+    let neighborhood = list
+        .tools
+        .iter()
+        .find(|tool| tool.name == "get_dependency_neighborhood")
+        .unwrap();
+    assert_eq!(
+        neighborhood.input_schema["oneOf"].as_array().unwrap().len(),
+        2
+    );
     let cases = [
         (
             "/v1/search",
@@ -217,6 +261,15 @@ async fn cli_http_and_real_mcp_client_parity_and_freshness() {
         let m = m.structured_content.unwrap();
         assert_eq!(h["result"], expected, "HTTP {name}");
         assert_eq!(m["result"], expected, "MCP {name}");
+        assert_eq!(h["snapshot"]["descriptor_version"], 1);
+        assert_eq!(
+            h["snapshot"]["freshness"],
+            if name == "get_change_impact" {
+                "committed"
+            } else {
+                "verified"
+            }
+        );
         if name == "find_symbol" {
             assert_eq!(expected["data"]["matches"].as_array().unwrap().len(), 2);
         }
@@ -272,6 +325,18 @@ async fn cli_http_and_real_mcp_client_parity_and_freshness() {
             .await
             .is_err()
     );
+    let semantic_error = client
+        .call_tool(
+            CallToolRequestParams::new("get_dependency_neighborhood").with_arguments(
+                json!({"symbol":"target","depth":9})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(semantic_error.is_error, Some(true));
     let fail = client
         .call_tool(
             CallToolRequestParams::new("get_change_impact").with_arguments(
@@ -434,7 +499,10 @@ fn mcp_wire_metadata_errors_notifications_and_eof() {
             .contains(&json!("2026-07-28"))
     );
     writeln!(input, "{{").unwrap();
-    // The SDK drops malformed JSON syntax and continues with the next frame.
+    let parse_error = receive();
+    assert_eq!(parse_error["error"]["code"], -32700);
+    assert!(parse_error["id"].is_null());
+    // A syntactically valid frame without mandatory 2026 metadata is distinct.
     writeln!(
         input,
         "{}",
@@ -466,6 +534,38 @@ fn mcp_wire_metadata_errors_notifications_and_eof() {
     )
     .unwrap();
     assert_eq!(receive()["id"], 4);
+    for id in 10..110 {
+        writeln!(
+            input,
+            "{}",
+            json!({"jsonrpc":"2.0","id":id,"method":"tools/list","params":{"_meta":meta}})
+        )
+        .unwrap();
+        writeln!(
+            input,
+            "{}",
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":id}})
+        )
+        .unwrap();
+    }
+    writeln!(
+        input,
+        "{}",
+        json!({"jsonrpc":"2.0","id":111,"method":"tools/list","params":{"_meta":meta}})
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let response: Value =
+            serde_json::from_str(&rx.recv_timeout(Duration::from_secs(1)).unwrap()).unwrap();
+        if response["id"] == 111 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "final MCP request not served"
+        );
+    }
     drop(input);
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
@@ -518,6 +618,12 @@ fn source_boundaries_warnings_and_controlled_shutdown() {
     for secret in ["OUTSIDE_SECRET", "VENDOR_SECRET", "PRIVATE_SECRET"] {
         assert!(!rendered.contains(secret));
     }
+    let directly_targeted = h.call("/v1/context", json!({"task":".env","budget":4000}));
+    assert!(!directly_targeted.to_string().contains("PRIVATE_SECRET"));
+    assert_eq!(
+        directly_targeted["result"]["data"]["coverage"]["sensitive_files_omitted"],
+        1
+    );
     assert!(!reply["warnings"].as_array().unwrap().is_empty());
     let _ = Command::new("kill")
         .args(["-TERM", &h.child.id().to_string()])
@@ -609,6 +715,10 @@ fn http_overload_survives_disconnected_cache_writer() {
         }
         assert!(std::time::Instant::now() < deadline, "no overload observed");
     }
+    let (_, _, health) = h.request("GET", "/health", "", b"");
+    let health: Value = serde_json::from_slice(&health).unwrap();
+    assert_eq!(health["status"], "ok");
+    assert_eq!(health["readiness"], "busy");
     drop(pending);
     assert_eq!(h.request("POST", "/v1/search", &auth, body).0, 503);
     conn.execute_batch("ROLLBACK;").unwrap();

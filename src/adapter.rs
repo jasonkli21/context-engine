@@ -106,11 +106,14 @@ pub enum Error {
 }
 impl Request {
     pub fn parse(name: &str, bytes: &[u8]) -> Result<Self, Error> {
+        Self::parse_detailed(name, bytes).map_err(|_| Error::InvalidArguments)
+    }
+    pub fn parse_detailed(name: &str, bytes: &[u8]) -> Result<Self, ParseError> {
         if bytes.len() > MAX_REQUEST {
-            return Err(Error::InvalidArguments);
+            return Err(ParseError::Invalid);
         }
-        fn parse<T: serde::de::DeserializeOwned>(b: &[u8]) -> Result<T, Error> {
-            serde_json::from_slice(b).map_err(|_| Error::InvalidArguments)
+        fn parse<T: serde::de::DeserializeOwned>(b: &[u8]) -> Result<T, ParseError> {
+            serde_json::from_slice(b).map_err(|_| ParseError::Invalid)
         }
         let r = match name {
             "search_codebase" => Self::Search(parse(bytes)?),
@@ -118,9 +121,9 @@ impl Request {
             "get_dependency_neighborhood" => Self::Neighborhood(parse(bytes)?),
             "get_change_impact" => Self::Impact(parse(bytes)?),
             "build_task_context" => Self::Context(parse(bytes)?),
-            _ => return Err(Error::InvalidArguments),
+            _ => return Err(ParseError::Invalid),
         };
-        r.validate().map_err(|_| Error::InvalidArguments)?;
+        r.validate().map_err(|_| ParseError::Semantic)?;
         Ok(r)
     }
     fn validate(&self) -> application::Result<()> {
@@ -169,12 +172,44 @@ impl Request {
         Ok(())
     }
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParseError {
+    Invalid,
+    Semantic,
+}
 #[derive(Serialize)]
 pub struct Reply {
     pub api_version: u32,
     pub state: &'static str,
+    pub snapshot: SnapshotDescriptor,
     pub warnings: Vec<String>,
     pub result: Value,
+}
+#[derive(Serialize)]
+pub struct SnapshotDescriptor {
+    pub descriptor_version: u8,
+    pub freshness: &'static str,
+    pub git_head: Option<String>,
+    pub git_dirty: Option<bool>,
+    pub committed_base: Option<String>,
+}
+impl SnapshotDescriptor {
+    fn current(index: &crate::model::RepositoryIndex, warnings: &[String]) -> Self {
+        Self {
+            descriptor_version: 1,
+            freshness: if warnings
+                .iter()
+                .any(|warning| warning.contains("source freshness could not be established"))
+            {
+                "uncertain"
+            } else {
+                "verified"
+            },
+            git_head: index.git.as_ref().and_then(|git| git.head_commit.clone()),
+            git_dirty: index.git.as_ref().and_then(|git| git.is_dirty),
+            committed_base: None,
+        }
+    }
 }
 struct Counter {
     bytes: usize,
@@ -207,9 +242,10 @@ fn execute(app: &Application, request: Request) -> Result<Reply, Error> {
             Error::QueryFailed
         }
     };
-    let (result, warnings, state) = match request {
+    let (result, warnings, state, snapshot) = match request {
         Request::Search(r) => {
             let o = app.search(&r.query, r.kind.into(), r.limit).map_err(fail)?;
+            let snapshot = SnapshotDescriptor::current(&o.data.index, &o.warnings);
             (
                 value(output::query::search_dto(
                     &o.data.index,
@@ -219,14 +255,17 @@ fn execute(app: &Application, request: Request) -> Result<Reply, Error> {
                 ))?,
                 o.warnings,
                 "current_working_tree_best_effort",
+                snapshot,
             )
         }
         Request::Symbol(r) => {
             let o = app.symbol(&r.name).map_err(fail)?;
+            let snapshot = SnapshotDescriptor::current(&o.data.index, &o.warnings);
             (
                 value(output::index::symbol_dto(&o.data))?,
                 o.warnings,
                 "current_working_tree_best_effort",
+                snapshot,
             )
         }
         Request::Neighborhood(r) => {
@@ -234,6 +273,7 @@ fn execute(app: &Application, request: Request) -> Result<Reply, Error> {
                 .neighborhood(r.symbol.as_deref(), r.file.as_deref(), r.depth)
                 .map_err(fail)?;
             let d = o.data;
+            let snapshot = SnapshotDescriptor::current(&d.graph.index, &o.warnings);
             (
                 value(output::query::neighborhood_dto(
                     &d.graph,
@@ -243,14 +283,23 @@ fn execute(app: &Application, request: Request) -> Result<Reply, Error> {
                 ))?,
                 o.warnings,
                 "current_working_tree_best_effort",
+                snapshot,
             )
         }
         Request::Impact(r) => {
             let d = app.impact(&r.range, r.depth).map_err(fail)?;
+            let snapshot = SnapshotDescriptor {
+                descriptor_version: 1,
+                freshness: "committed",
+                git_head: Some(d.revisions.head.clone()),
+                git_dirty: None,
+                committed_base: Some(d.revisions.base.clone()),
+            };
             (
                 value(output::change::dto("impact", &d).map_err(|_| Error::ResponseLimit)?)?,
                 vec![],
                 "committed_revisions",
+                snapshot,
             )
         }
         Request::Context(r) => {
@@ -258,6 +307,7 @@ fn execute(app: &Application, request: Request) -> Result<Reply, Error> {
                 .context(&r.task, r.budget, r.change.as_deref())
                 .map_err(fail)?;
             let d = o.data;
+            let snapshot = SnapshotDescriptor::current(&d.graph.index, &o.warnings);
             (
                 value(
                     output::context::dto(&d.graph, &d.task, &d.bundle, d.changes.as_ref())
@@ -265,12 +315,14 @@ fn execute(app: &Application, request: Request) -> Result<Reply, Error> {
                 )?,
                 o.warnings,
                 "current_working_tree_best_effort",
+                snapshot,
             )
         }
     };
     let reply = Reply {
         api_version: 1,
         state,
+        snapshot,
         warnings,
         result,
     };
@@ -288,6 +340,9 @@ impl Worker {
             app: Arc::new(app),
             admission: Arc::new(Semaphore::new(1)),
         }
+    }
+    pub fn ready(&self) -> bool {
+        self.admission.available_permits() > 0
     }
     pub async fn run<T: Send + 'static>(
         &self,

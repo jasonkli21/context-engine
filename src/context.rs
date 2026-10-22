@@ -11,6 +11,7 @@ use crate::{
 use std::{
     cmp::Reverse,
     collections::{BTreeMap, BTreeSet},
+    path::Path,
 };
 
 /// The public scoring, explanation, and ordering constants for file-ranker-v1.
@@ -197,6 +198,7 @@ pub struct Ranking {
     pub roots: usize,
     pub roots_omitted: usize,
     pub graph_truncated: bool,
+    pub sensitive_files_omitted: usize,
 }
 pub struct Selected {
     pub candidate: Candidate,
@@ -226,6 +228,31 @@ pub struct Bundle {
 
 pub fn eligible(role: FileRole) -> bool {
     !matches!(role, FileRole::Generated | FileRole::Vendor)
+}
+
+/// Full-file context must not disclose conventional credential files by default.
+/// This deliberately affects context selection only; inventory and exact path
+/// queries continue to describe every scanned file.
+pub fn sensitive_context_path(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
+    name == ".env"
+        || name.starts_with(".env.")
+        || name == ".npmrc"
+        || name == ".pypirc"
+        || name == ".netrc"
+        || name.starts_with("credentials")
+        || name == "secrets.json"
+        || name == "id_rsa"
+        || name == "id_ed25519"
+        || name.ends_with(".pem")
+        || name.ends_with(".key")
+}
+
+fn context_eligible(file: &crate::model::FileAnalysis) -> bool {
+    eligible(file.role) && !sensitive_context_path(&file.relative_path)
 }
 
 pub fn path_score(path: &str, task: &Task) -> (u16, BTreeSet<&'static str>) {
@@ -363,10 +390,16 @@ pub fn rank(g: &RepositoryGraph, task: &Task, changes: Option<&ChangeSignal>) ->
     let owners = query::file_owners(g);
     let metrics = query::structural_metrics(g, &owners);
     let mut candidates: Vec<_> = (0..g.index.files.len()).map(Candidate::new).collect();
+    let sensitive_files_omitted = g
+        .index
+        .files
+        .iter()
+        .filter(|file| eligible(file.role) && sensitive_context_path(&file.relative_path))
+        .count();
     let mut seeds = BTreeMap::<EntityId, (u16, bool)>::new();
     let mut matches = vec![vec![]; candidates.len()];
     for c in &mut candidates {
-        if !eligible(g.index.files[c.file].role) {
+        if !context_eligible(&g.index.files[c.file]) {
             continue;
         }
         if let Some(path) = utf8_relative(&g.index.files[c.file].relative_path) {
@@ -387,7 +420,7 @@ pub fn rank(g: &RepositoryGraph, task: &Task, changes: Option<&ChangeSignal>) ->
         let Some(file) = owners[id.0 as usize] else {
             continue;
         };
-        if !eligible(g.index.files[file].role) {
+        if !context_eligible(&g.index.files[file]) {
             continue;
         }
         let (value, reason) = symbol_score(&s.name, &s.qualified_name, task);
@@ -411,7 +444,7 @@ pub fn rank(g: &RepositoryGraph, task: &Task, changes: Option<&ChangeSignal>) ->
     }
     if let Some(change) = changes {
         for (&file, &value) in &change.files {
-            if !eligible(g.index.files[file].role) {
+            if !context_eligible(&g.index.files[file]) {
                 continue;
             }
             candidates[file].score.change = value;
@@ -424,7 +457,7 @@ pub fn rank(g: &RepositoryGraph, task: &Task, changes: Option<&ChangeSignal>) ->
                 });
         }
         for &id in &change.seeds {
-            if owners[id.0 as usize].is_some_and(|f| eligible(g.index.files[f].role)) {
+            if owners[id.0 as usize].is_some_and(|f| context_eligible(&g.index.files[f])) {
                 let priority = if g.symbol(id).is_some() {
                     ranker_v1::CHANGE_SYMBOL_ROOT_PRIORITY
                 } else {
@@ -470,10 +503,10 @@ pub fn rank(g: &RepositoryGraph, task: &Task, changes: Option<&ChangeSignal>) ->
     }
     let eligible_count = candidates
         .iter()
-        .filter(|c| eligible(g.index.files[c.file].role))
+        .filter(|c| context_eligible(&g.index.files[c.file]))
         .count();
     candidates.retain_mut(|c| {
-        if !eligible(g.index.files[c.file].role) {
+        if !context_eligible(&g.index.files[c.file]) {
             return false;
         }
         if let Some(d) = c.graph_distance {
@@ -528,6 +561,7 @@ pub fn rank(g: &RepositoryGraph, task: &Task, changes: Option<&ChangeSignal>) ->
         roots: result.roots.len(),
         roots_omitted: roots_count.saturating_sub(result.roots.len()),
         graph_truncated: result.truncated,
+        sensitive_files_omitted,
     }
 }
 
@@ -1428,6 +1462,7 @@ mod tests {
                             roots: 0,
                             roots_omitted: 0,
                             graph_truncated: false,
+                            sensitive_files_omitted: 0,
                         }
                     }
                     2 | 3 => Ranking {
@@ -1445,6 +1480,7 @@ mod tests {
                         roots: 0,
                         roots_omitted: 0,
                         graph_truncated: false,
+                        sensitive_files_omitted: 0,
                     },
                     _ => unreachable!(),
                 };

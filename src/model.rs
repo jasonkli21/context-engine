@@ -156,6 +156,7 @@ mod tests {
 }
 
 pub const DEFAULT_MAX_PARSE_BYTES: u64 = 1024 * 1024;
+#[derive(Clone)]
 pub struct IndexOptions {
     pub root: PathBuf,
     pub max_parse_file_bytes: u64,

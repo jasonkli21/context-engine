@@ -121,8 +121,9 @@ Define a deliberately small, typed operation vocabulary, e.g. `Search { query, k
 Proposed minimal UX (final spelling may change to fit Clap style):
 
 ```bash
-# Supply a strong token through the process environment (do not place it in CLI argv).
-CONTEXT_ENGINE_SERVE_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" \
+# Corrective note added 2026-10-21: the server requires 64 hexadecimal characters.
+# Supply a strong token through the process environment (not CLI argv).
+CONTEXT_ENGINE_SERVE_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
   ctx serve . --listen 127.0.0.1:0
 
 # Discover the selected loopback address in an escaped startup line on stderr;

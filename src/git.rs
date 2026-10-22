@@ -1,8 +1,11 @@
 use crate::model::{GitMetadata, ScanWarning};
 use std::{
     ffi::OsString,
+    io::Read,
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
 fn run(root: &Path, args: &[&str]) -> std::io::Result<Output> {
@@ -24,7 +27,61 @@ fn run(root: &Path, args: &[&str]) -> std::io::Result<Output> {
     ] {
         command.env_remove(key);
     }
-    command.output()
+    command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null());
+    let mut child = command.spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("Git stdout pipe unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| std::io::Error::other("Git stderr pipe unavailable"))?;
+    let out_reader = thread::spawn(move || read_capture(stdout, 16 * 1024 * 1024));
+    let err_reader = thread::spawn(move || read_capture(stderr, 1024 * 1024));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Git operation exceeded 15 seconds",
+            ));
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    let stdout = out_reader
+        .join()
+        .map_err(|_| std::io::Error::other("Git stdout reader failed"))??;
+    let stderr = err_reader
+        .join()
+        .map_err(|_| std::io::Error::other("Git stderr reader failed"))??;
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+fn read_capture(mut reader: impl std::io::Read, limit: usize) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader
+        .by_ref()
+        .take(limit.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Git output exceeded metadata limit",
+        ));
+    }
+    Ok(bytes)
 }
 fn warning(message: String) -> ScanWarning {
     ScanWarning {

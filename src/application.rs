@@ -54,7 +54,7 @@ impl Application {
         })
     }
     pub fn symbol(&self, name: &str) -> Result<Outcome<Symbol>> {
-        let r = self.analysis(false)?;
+        let r = self.analysis_with_probe(false, true)?;
         let (match_mode, matches) = r.data.index.lookup(name);
         let matches = matches.into_iter().cloned().collect();
         Ok(Outcome {
@@ -68,7 +68,10 @@ impl Application {
         })
     }
     fn graph(&self) -> Result<Outcome<graph::RepositoryGraph>> {
-        let r = self.analysis(false)?;
+        self.graph_with_probe(true)
+    }
+    fn graph_with_probe(&self, probe_git: bool) -> Result<Outcome<graph::RepositoryGraph>> {
+        let r = self.analysis_with_probe(false, probe_git)?;
         Ok(Outcome {
             data: graph::from_analysis(r.data.index, r.data.relation_files)?,
             warnings: r.warnings,
@@ -82,7 +85,8 @@ impl Application {
     ) -> Result<Outcome<Search>> {
         query::validate_query(text)?;
         query::validate_limit(limit)?;
-        let r = self.analysis(false)?;
+        // Match the established CLI policy: search does not need Git metadata.
+        let r = self.analysis_with_probe(false, false)?;
         let result = query::search(&r.data.index, text, kind, limit)?;
         Ok(Outcome {
             data: Search {
@@ -110,7 +114,8 @@ impl Application {
         let selector = symbol
             .map(str::to_owned)
             .unwrap_or_else(|| file.unwrap().to_string_lossy().into_owned());
-        let r = self.graph()?;
+        // Neighborhood is likewise a source/index query, not a Git query.
+        let r = self.graph_with_probe(false)?;
         let result = r
             .data
             .query(graph::QueryKind::Neighborhood, &selector, file, depth);
@@ -160,6 +165,19 @@ impl Application {
                 bundle,
                 changes,
             },
+            warnings: r.warnings,
+        })
+    }
+    fn analysis_with_probe(
+        &self,
+        force: bool,
+        probe_git: bool,
+    ) -> Result<Outcome<persistence::AnalysisArtifact>> {
+        let mut options = self.options.clone();
+        options.probe_git = probe_git;
+        let r = persistence::reconcile(&options, force)?;
+        Ok(Outcome {
+            data: r.artifact,
             warnings: r.warnings,
         })
     }

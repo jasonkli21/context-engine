@@ -638,8 +638,10 @@ expose serializable DTO builders used by CLI rendering and both adapters, avoidi
 JSON scraping and preserving the existing command schemas.
 
 `adapter.rs` validates the fixed operation vocabulary, adds a schema-v1 wrapper
-with current/committed state and warnings, checks serialized size before allocating
-the JSON value, and owns one completion-held semaphore permit. Trusted startup
+with current/committed state, warnings and a versioned snapshot descriptor, checks
+serialized size before allocating the JSON value, and owns one completion-held
+semaphore permit. Search and neighborhood share the CLI's no-Git-probe policy;
+symbol and context retain Git metadata because their contracts use it. Trusted startup
 configuration owns the canonical root and existing parse limits. No remote request
 contains root/cache/executable configuration. `spawn_blocking` performs every
 query and DTO construction operation; the permit moves into the closure so dropped
@@ -649,24 +651,34 @@ there is no service-owned graph/index or automatic watcher.
 `service.rs` binds loopback IPs only and requires a launch-environment bearer token
 for intelligence routes. Exact bound authority, no Origin, no CORS, no-store,
 JSON/method/size checks and redacted errors delimit the local HTTP boundary.
+Unauthenticated health reports process liveness and whether its worker is ready.
 32 connection slots, 45-second connection lifetimes, 16 body readers, 16 KiB
-requests and 8 MiB responses bound transport work. The 30-second query timeout
-does not kill blocking work. Shutdown stops acceptance, permits five seconds of
+requests and 8 MiB responses bound transport work. Git subprocesses have a
+15-second deadline and bounded output; the 30-second query timeout does not kill
+blocking filesystem work. Shutdown stops acceptance, permits five seconds of
 socket draining and then drains the blocking job without a hard time bound.
 
 `mcp.rs` adapts the same operations using pinned official rmcp 3.6.0, restricted
-to MCP 2026-07-28 stateless metadata/discovery semantics. The SDK owns JSON-RPC,
-stdio framing, metadata validation, cancellation and EOF; no legacy initialization
+stdio dispatch, metadata validation, cancellation and EOF. A small bounded framing
+transport returns JSON-RPC parse errors for malformed JSON. No legacy initialization
 protocol is advertised. A 16 KiB incoming frame bound and 8 MiB complete tool-result
 bound supplement domain limits. At most 16 requests can retain unsent responses;
 capacity exhaustion/duplicate outstanding IDs close stdio and writes time out after
-ten seconds. Cancelled requests without responses conservatively retain a slot
-until reconnect. The adapter uses the SDK direct-service entry point with a narrow
+ten seconds. Cancellation notifications release their matching request slot. The adapter uses the SDK direct-service entry point with a narrow
 per-request metadata guard, avoiding its dual-era bootstrap behavior. Stdio is client-authorized and has no HTTP token.
-Tool schemas reject extra fields; runtime validation additionally enforces byte,
-selector, range and combined-argument constraints. Source disclosure is intentional
+Tool schemas reject extra fields and encode exactly one neighborhood selector;
+runtime validation additionally enforces UTF-8 byte, range and combined-argument
+constraints. Conventional credential paths are omitted from full-file context and
+their count is visible in coverage; this filename policy is not secret detection.
+Source disclosure for remaining eligible files is intentional
 for authenticated HTTP and trusted MCP clients. No policy/authority judgments,
 repository writes or execution tools are exposed.
+
+The snapshot descriptor reports known Git HEAD/dirty state and whether freshness
+was verified, but does not identify a content generation or imply an atomic scan.
+Git subprocesses have a 15-second wall-time bound. Filesystem operations still have
+no hard wall-time guarantee; the HTTP timeout does not abort blocking work, and
+shutdown can wait for it indefinitely.
 
 ---
 

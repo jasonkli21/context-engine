@@ -610,9 +610,10 @@ export CONTEXT_ENGINE_SERVE_TOKEN="$(python3 -c 'import secrets; print(secrets.t
 
 Startup prints only `ctx: listening http://127.0.0.1:PORT` to stderr. Use that exact
 IP and port as the authority. Public/wildcard bindings are rejected. IPv6 loopback
-is accepted but has not been executed locally. All Origin headers are rejected;
-CORS is disabled. Intelligence routes require `Authorization: Bearer TOKEN`.
-`GET /health` returns only API version/status without authentication.
+is accepted but has not been executed locally. `GET /health` reports process
+liveness and whether the single repository worker is ready or busy without
+authentication. All Origin headers are rejected; CORS is disabled. Intelligence
+routes require `Authorization: Bearer TOKEN`.
 
 All intelligence operations use **POST** with exactly `Content-Type: application/json`,
 no URL query parameters, and a JSON object. POST expresses a read-only query; it
@@ -636,8 +637,9 @@ curl --fail-with-body http://127.0.0.1:PORT/v1/search \
   --data '{"query":"snapshot","kind":"symbol","limit":10}'
 ```
 
-Successful responses are `{ "api_version": 1, "state": "...", "warnings": [],
-"result": { "schema_version": 1, "command": "...", "data": {} } }`. The nested
+Successful responses are `{ "api_version": 1, "state": "...", "snapshot": {},
+"warnings": [], "result": { "schema_version": 1, "command": "...", "data": {} } }`.
+The versioned snapshot descriptor reports available Git/freshness metadata. The nested
 result uses the same DTO as existing CLI JSON, preserving ordering, explanations,
 ambiguity, coverage and truncation. `state` is `current_working_tree_best_effort`
 or `committed_revisions`. Current queries reconcile each time; this is not an
@@ -661,7 +663,26 @@ does not cancel blocking Git/SQLite/analysis work or release its permit early.
 SIGINT/SIGTERM stops acceptance, allows five seconds for HTTP connections, and
 then waits for the admitted blocking job. That final wait has no hard deadline.
 The core algorithms have resource bounds, but filesystem/Git I/O can still stall.
+Git subprocesses have a 15-second deadline and bounded captured output; filesystem
+operations remain capable of stalling the in-process worker and delaying shutdown.
+If readiness remains busy after a Git timeout, retry after the 15-second command
+deadline. A filesystem stall has no recovery inside the process; terminate and
+restart the service if the repository remains unresponsive. Graceful shutdown
+can wait for that filesystem operation to return.
 `watch` is not launched by either adapter.
+
+Full-file context deliberately omits conventional credential paths by default:
+`.env` and `.env.*`, `.npmrc`, `.pypirc`, `.netrc`, `credentials*`,
+`secrets.json`, `id_rsa`, `id_ed25519`, and files ending in `.pem` or `.key`.
+The inventory and search APIs still include these paths; context coverage reports
+`sensitive_files_omitted`. Other hidden or unknown files can still be selected,
+so review the pinned repository contents before connecting an agent. This is a
+filename policy, not secret detection.
+
+Current adapter replies include a versioned `snapshot` descriptor with Git HEAD,
+known dirty state, and whether source freshness was verified. It does not claim
+an atomic filesystem snapshot or provide a content-generation token. Committed
+impact replies identify their exact base and head commits.
 
 MCP uses the official Rust SDK **rmcp 3.6.0**, pinned to **2026-07-28 only**.
 It uses per-request version/capability metadata and `server/discover`; there is no
@@ -680,24 +701,26 @@ It uses per-request version/capability metadata and `server/discover`; there is 
 
 The client owns stdio trust; MCP does not use the HTTP bearer token. Stdout contains
 only newline-delimited UTF-8 protocol messages. Runtime input validation enforces
-the published tool constraints. Unknown tools/invalid arguments are protocol
-errors; valid queries that fail return `isError: true`. The SDK drops malformed
-JSON syntax/oversized lines and continues; well-formed invalid frames receive
-protocol errors. The stdio adapter caps outstanding requests at 16 and gives stdout writes ten
-seconds. Exceeding the cap or reusing an outstanding ID closes the transport.
-Cancelled requests without responses conservatively retain a slot until process
-exit; clients issuing many cancellations should reconnect. EOF closes the adapter
-and drains the admitted job. Cancellation
-is best effort; an already running blocking computation still finishes.
+the published tool constraints. Unknown tools and malformed argument shapes are
+protocol errors; semantic argument constraints return `isError: true`. Malformed
+JSON receives a `-32700` parse error; oversized lines are dropped within the frame
+bound, and well-formed invalid frames receive protocol errors. The stdio adapter
+caps outstanding requests at 16 and gives stdout writes ten seconds. Exceeding the
+cap or reusing an outstanding ID closes the transport. Cancellation notifications
+release their matching request slot. EOF closes the adapter and drains the admitted
+job. Cancellation is best effort; an already running blocking computation still
+finishes.
 
 Both transports expose sensitive source and repository metadata to their trusted
 consumer. Context includes full files. Local same-user processes and the launching
 user are inside the trust boundary; loopback is not a multi-user security sandbox.
 Keep bearer secrets private and grant MCP access only to trusted clients.
-The existing scanner ignores/generated/vendor exclusions and safe source loader
-remain authoritative. Cache location is launch-owned and stays outside the root.
+The scanner applies ignore rules and generated/vendor exclusions. Hidden files are
+included in inventory; conventional credential filenames are omitted only from
+full-file context as described above. Cache location is launch-owned and stays outside the root.
 See the [Phase 9 report](docs/reports/phase-9-implementation-report.md) for executed
-interoperability/security checks and limitations. Prior phase reviews remain pending.
+interoperability/security checks and limitations, and the [Phase 9 review-fix report](docs/reports/phase-9-review-fix-report.md)
+for follow-up changes. Prior phase reviews remain pending.
 
 ## Development
 
