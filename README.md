@@ -12,7 +12,7 @@ The project is intentionally **descriptive rather than normative**. It aims to m
 
 ## Status
 
-**Pre-alpha / Phase 10 implemented; independent review pending.**
+**Pre-alpha / Phase 11 evidence export implemented; independent review and maintainer acceptance pending.**
 The synchronous CLI scans repositories, indexes Rust/Python symbols, and builds a
 canonical in-memory graph of lexical containment, imports and call-site references,
 incrementally reconciling a validated external analysis cache after fresh inventory/content checks.

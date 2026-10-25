@@ -196,6 +196,19 @@ Evidence: [Phase 5 review-fix report](reports/phase-5-review-fix-report.md),
   compatible requests are detailed in the Phase 11 report. This is implementation
   evidence, not Phase 11 or any earlier phase's independent acceptance.
 
+- On 2026-10-24 the maintainer requested one commit addressing attached Phase 11
+  findings CE11-01 through CE11-03. Native Windows separators now normalize to
+  POSIX wire paths after strict component checks; the independent validator now
+  checks relation endpoint types/path binding, scope format, candidate ranks,
+  change-side references and workspace trigger/witness ownership. README and
+  current-state status distinguish the evidence export from an unintegrated
+  production consumer. Canonical verification passed locally with 115 unit and
+  103 integration tests, including the evidence consumer probes. A Windows-gated
+  path regression was added but could not be executed on this macOS host. Fresh
+  independent Phase 11 re-review and maintainer acceptance remain pending; Phase
+  10 CE10 re-review and earlier dispositions are unchanged. See the [Phase 11
+  review-fix report](reports/phase-11-review-fix-report.md).
+
 - The maintainer directly authorized Phase 10 from `39c87cfa` and requested one
   implementation commit, without subagents. The pre-existing untracked Phase 10
   plan was read and preserved outside the commit. Canonical verification passed
@@ -333,8 +346,9 @@ build.rs. Declared file availability does not prove use; current relationships a
 committed provider changes have mixed time bases. Depth is at most three; each
 candidate retains one representative chain and up to 64 direct relation triggers,
 with excess counts surfaced. Text selectors cannot target non-UTF-8 names, and
-omissions are counted. Hard bounds can reject a command. No new persistence,
-HTTP/MCP operation or Phase 11 integration exists.
+omissions are counted. Hard bounds can reject a command. Phase 11 adds an evidence
+v1 export without new persistence or HTTP/MCP operations; a production Context
+Integrity evidence-v1 consumer has not been integrated.
 
 Phase 9 is local, single-root and serialized. Adapter context budgets stop at 1 MiB
 of full-file content; response limits can reject larger evidence sets. HTTP timeouts

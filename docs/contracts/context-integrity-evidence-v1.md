@@ -5,7 +5,11 @@ metadata, not authority, policy, drift, claim verification or architectural inte
 The [JSON Schema](context-integrity-evidence-v1.schema.json) defines required keys,
 nullability, feed variants, scalar types and enum constraints. The separate
 [Python conformance consumer](../../tests/fixtures/evidence/validate.py) additionally
-checks paths, identity uniqueness, references, counts and observation coherence.
+checks platform-native path normalization, identity uniqueness, typed reference
+and relation-path coherence, scoped change references, candidate rank bounds,
+workspace trigger ownership, counts and observation coherence. It does not
+independently recompute the producer's BLAKE3 identity derivations; consumers
+that need that guarantee must verify those derivations themselves.
 Golden valid/invalid documents live beside that consumer. Metadata (including
 names and paths) may itself be sensitive; this is not secret detection.
 
@@ -73,9 +77,13 @@ additional limitations rather than proof of completeness.
 
 ## Exact paths and identities
 
-Paths are exact UTF-8 POSIX relative paths: nonempty, <=4096 UTF-8 bytes,
+Paths on the wire are exact UTF-8 POSIX relative paths: nonempty, <=4096 UTF-8 bytes,
 components <=255 bytes, no empty/dot/parent components, backslash, colon, control
 characters, surrogate or replacement characters. Absolute paths are forbidden.
+The producer validates native path components before formatting them with `/`;
+Windows `\` separators are normalized, while literal Unix filename backslashes
+remain unrepresentable and are omitted or rejected. Repeated separators, dot and
+parent components are rejected before platform path normalization can erase them.
 Nonrepresentable structure paths and their dependent facts are omitted and
 counted; essential changed Git sides or workspace paths fail closed. Names are
 syntax metadata, not path identities. No lossy string is an identity input.

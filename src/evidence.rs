@@ -192,20 +192,36 @@ fn nonce() -> String {
     )
 }
 pub fn safe_path(p: &Path) -> Option<String> {
-    // Validate native input before component formatting (Path::components normalizes dots).
+    // Validate the unnormalized native spelling before component formatting. On Windows,
+    // backslash is a native separator; on Unix it is an ordinary (disallowed) filename byte.
     let raw = p.to_str()?;
-    if raw.contains(['\\', ':', '\u{fffd}']) || raw.chars().any(char::is_control) {
+    if raw.contains([':', '\u{fffd}']) || raw.chars().any(char::is_control) {
         return None;
     }
-    if raw
-        .split('/')
-        .any(|c| c.is_empty() || c == "." || c == ".." || c.len() > 255)
-        || raw.len() > 4096
+    let components = raw.split(|c| c == '/' || (cfg!(windows) && c == '\\'));
+    if components.clone().any(|c| {
+        c.is_empty()
+            || c == "."
+            || c == ".."
+            || c.len() > 255
+            || (!cfg!(windows) && c.contains('\\'))
+    }) || raw.len() > 4096
     {
         return None;
     }
     crate::application::validate_file(p).ok()?;
-    crate::paths::utf8_relative(p)
+    let wire = crate::paths::utf8_relative(p)?;
+    // Keep the public identity spelling platform-independent and recheck the normalized form.
+    if wire.contains(['\\', ':', '\u{fffd}'])
+        || wire.len() > 4096
+        || wire.chars().any(char::is_control)
+        || wire
+            .split('/')
+            .any(|c| c.is_empty() || c == "." || c == ".." || c.len() > 255)
+    {
+        return None;
+    }
+    Some(wire)
 }
 fn logical_id(s: &str) -> Result<()> {
     if s.is_empty()
@@ -1167,6 +1183,12 @@ mod tests {
             identity("file", &["a", "bc"])
         );
         assert_ne!(identity("file", &["a"]), identity("symbol", &["a"]));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn native_windows_nested_paths_use_posix_wire_form() {
+        let path = Path::new("src").join("lib.rs");
+        assert_eq!(safe_path(&path).as_deref(), Some("src/lib.rs"));
     }
     #[cfg(unix)]
     #[test]

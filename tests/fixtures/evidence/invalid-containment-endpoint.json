@@ -1,0 +1,196 @@
+{
+  "evidence_schema_version": 1,
+  "producer": {
+    "name": "context-engine",
+    "version": "0.1.0",
+    "analysis_compat_version": 1,
+    "identity_version": "evidence-id-v1",
+    "parser_version": null
+  },
+  "subject": {
+    "kind": "repository",
+    "repository_id": "fixture"
+  },
+  "observation": {
+    "basis": "best_effort_worktree",
+    "scope": "51e6aa6c30d5c82611cf632090807e93d29ec050649164f2ddd354410fd13a12",
+    "atomic": false,
+    "git_head": null,
+    "git_dirty": null,
+    "base": null,
+    "head": null
+  },
+  "coverage": {
+    "complete": false,
+    "counts": {
+      "analysis_analyzed": 1,
+      "diagnostics_withheld": 0,
+      "files_exported": 1,
+      "files_observed": 1,
+      "reconciliation_warnings_withheld": 0,
+      "relations_analyzed": 1,
+      "relations_exported": 4,
+      "scan_warnings_withheld": 0,
+      "symbols_exported": 1,
+      "syntax_errors": 0,
+      "unresolved_names": 1,
+      "unsupported_relation_candidates": 0
+    },
+    "limitations": [
+      "scanner_exclusions_apply",
+      "syntax_not_compiler_binding",
+      "raw_diagnostics_withheld",
+      "best_effort_non_atomic"
+    ]
+  },
+  "feed": "structure",
+  "data": {
+    "repository_ref": "a12383d10baee67e4e4bc0123ae59803ef0bc62c6fa8cc69e6364703839c7438",
+    "files": [
+      {
+        "id": "b0ebb0b3f9116593e7df862c977706a703e322f434fc51c75dceb6a43b326d46",
+        "path": "a.py",
+        "language": "Python",
+        "role": "Source",
+        "analysis_status": "analyzed",
+        "syntax_errors": 0,
+        "relation_status": "analyzed",
+        "unsupported_relation_candidates": 0
+      }
+    ],
+    "symbols": [
+      {
+        "id": "886f83874b73b334e32965114ae629e6b58fb370517429156980c2f5c1cfd5c1",
+        "file_ref": "b0ebb0b3f9116593e7df862c977706a703e322f434fc51c75dceb6a43b326d46",
+        "path": "a.py",
+        "language": "Python",
+        "kind": "function",
+        "name": "a",
+        "qualified_name": "a",
+        "range": {
+          "start": {
+            "byte": 16,
+            "row": 1,
+            "column": 0
+          },
+          "end": {
+            "byte": 32,
+            "row": 2,
+            "column": 7
+          }
+        },
+        "name_range": {
+          "start": {
+            "byte": 20,
+            "row": 1,
+            "column": 4
+          },
+          "end": {
+            "byte": 21,
+            "row": 1,
+            "column": 5
+          }
+        },
+        "derivation": "parser_definition"
+      }
+    ],
+    "relations": [
+      {
+        "id": "906dcbf9831683a3078a337ec273949437b62443c2195c56d1397f55daf20248",
+        "source_ref": "a12383d10baee67e4e4bc0123ae59803ef0bc62c6fa8cc69e6364703839c7438",
+        "target_ref": "886f83874b73b334e32965114ae629e6b58fb370517429156980c2f5c1cfd5c1",
+        "unresolved_name": null,
+        "kind": "contains",
+        "resolution": "direct_structural",
+        "metadata": {
+          "kind": "none"
+        },
+        "path": "a.py",
+        "range": null,
+        "language": null,
+        "derivation": "repository_contains_file"
+      },
+      {
+        "id": "abe357b3d656802be27a4120e89ec06221d888b76d9951b8317526b225f6a534",
+        "source_ref": "b0ebb0b3f9116593e7df862c977706a703e322f434fc51c75dceb6a43b326d46",
+        "target_ref": null,
+        "unresolved_name": "external",
+        "kind": "imports",
+        "resolution": "unresolved",
+        "metadata": {
+          "kind": "import",
+          "binding": null,
+          "wildcard": false
+        },
+        "path": "a.py",
+        "range": {
+          "start": {
+            "byte": 7,
+            "row": 0,
+            "column": 7
+          },
+          "end": {
+            "byte": 15,
+            "row": 0,
+            "column": 15
+          }
+        },
+        "language": "Python",
+        "derivation": "python_import_syntax"
+      },
+      {
+        "id": "c1bac52d5177d1c979563e85230a623d76a4d0c4e7f58acdcd058d893039871a",
+        "source_ref": "b0ebb0b3f9116593e7df862c977706a703e322f434fc51c75dceb6a43b326d46",
+        "target_ref": "886f83874b73b334e32965114ae629e6b58fb370517429156980c2f5c1cfd5c1",
+        "unresolved_name": null,
+        "kind": "contains",
+        "resolution": "direct_structural",
+        "metadata": {
+          "kind": "none"
+        },
+        "path": "a.py",
+        "range": {
+          "start": {
+            "byte": 16,
+            "row": 1,
+            "column": 0
+          },
+          "end": {
+            "byte": 32,
+            "row": 2,
+            "column": 7
+          }
+        },
+        "language": "Python",
+        "derivation": "lexical_range_containment"
+      },
+      {
+        "id": "78924cec92bdb993fecdff7f92202320379b295c2ba6b46bcdc29b4824e128d4",
+        "source_ref": "886f83874b73b334e32965114ae629e6b58fb370517429156980c2f5c1cfd5c1",
+        "target_ref": "886f83874b73b334e32965114ae629e6b58fb370517429156980c2f5c1cfd5c1",
+        "unresolved_name": null,
+        "kind": "references",
+        "resolution": "exact_same_file_qualified_name",
+        "metadata": {
+          "kind": "reference",
+          "context": "call"
+        },
+        "path": "a.py",
+        "range": {
+          "start": {
+            "byte": 29,
+            "row": 2,
+            "column": 4
+          },
+          "end": {
+            "byte": 30,
+            "row": 2,
+            "column": 5
+          }
+        },
+        "language": "Python",
+        "derivation": "python_call_syntax"
+      }
+    ]
+  }
+}

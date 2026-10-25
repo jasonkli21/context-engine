@@ -277,12 +277,66 @@ fn independent_decoder_golden_valid_and_invalid_documents() {
         "duplicate-id",
         "count",
         "nullability",
+        "relation-source-type",
+        "relation-path-mismatch",
+        "empty-scope",
+        "containment-endpoint",
+        "candidate-rank",
+        "change-side-reference",
     ] {
         assert!(
             !valid(&fs::read(p.join(format!("invalid-{name}.json"))).unwrap()),
             "{name}"
         );
     }
+}
+#[cfg(windows)]
+#[test]
+fn native_nested_windows_paths_survive_structure_candidates_and_changes() {
+    let r = Repo::new();
+    r.init();
+    r.write("src/lib.rs", b"pub fn nested_symbol() {}\n");
+    let base = r.commit();
+    r.write("src/lib.rs", b"pub fn nested_symbol() { let _ = 1; }\n");
+    let head = r.commit();
+
+    let structure = r.ok("structure", &[]);
+    assert!(
+        structure["data"]["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["path"] == "src/lib.rs")
+    );
+    assert!(
+        structure["data"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["path"] == "src/lib.rs")
+    );
+    assert_eq!(
+        structure["coverage"]["counts"]["unrepresentable_files_omitted"],
+        0
+    );
+
+    let candidates = r.ok("candidates", &["--task", "nested_symbol", "--limit", "50"]);
+    assert!(
+        candidates["data"]["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["file"]["path"] == "src/lib.rs")
+    );
+
+    let changes = r.ok("changes", &[&format!("{base}..{head}")]);
+    assert!(
+        changes["data"]["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["after"]["path"] == "src/lib.rs")
+    );
 }
 #[test]
 fn independent_decoder_rejects_mutated_live_references_and_counts() {
@@ -375,6 +429,9 @@ fn workspace_preserves_v2_observed_declared_and_impact_semantics() {
             .len(),
         1
     );
+    let mut wrong_trigger_owner = impact.clone();
+    wrong_trigger_owner["data"]["impact"]["candidates"][0]["repo"] = json!("provider");
+    assert!(!valid(&serde_json::to_vec(&wrong_trigger_owner).unwrap()));
     // Physical relocation keeps structural workspace relationships, not manifest bytes.
     let moved = tmp.path().with_extension("relocated");
     fs::rename(tmp.path(), &moved).unwrap();

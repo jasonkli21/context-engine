@@ -104,6 +104,7 @@ def symbol(s, files):
 
 def structure(d, coverage):
     ref(d['repository_ref'])
+    entities = {d['repository_ref']: ('repository', None)}
     ids = {d['repository_ref']}
     files = {}
     paths = set()
@@ -111,10 +112,12 @@ def structure(d, coverage):
         file(f)
         assert f['id'] not in ids and f['path'] not in paths
         ids.add(f['id']); paths.add(f['path']); files[f['id']] = f
+        entities[f['id']] = ('file', f['path'])
     for s in d['symbols']:
         symbol(s, files)
         assert s['id'] not in ids
         ids.add(s['id'])
+        entities[s['id']] = ('symbol', s['path'], s)
     entity_ids = set(ids)
     for r in d['relations']:
         ref(r['id']); safe(r['path'])
@@ -128,6 +131,38 @@ def structure(d, coverage):
             assert r['target_ref'] in entity_ids and r['unresolved_name'] is None
         if r['range'] is not None:
             span(r['range'])
+        source = entities[r['source_ref']]
+        target = entities.get(r['target_ref']) if r['target_ref'] is not None else None
+        if r['kind'] == 'contains':
+            assert r['resolution'] == 'direct_structural'
+            assert r['metadata']['kind'] == 'none'
+            assert target is not None and target[0] in {'file', 'symbol'}
+            if r['derivation'] == 'repository_contains_file':
+                assert source[0] == 'repository' and target[0] == 'file'
+                assert r['path'] == target[1] and r['range'] is None
+            else:
+                assert r['derivation'] == 'lexical_range_containment'
+                assert target[0] == 'symbol' and target[1] == r['path']
+                if source[0] == 'file':
+                    assert source[1] == r['path'] and r['range'] == target[2]['range']
+                else:
+                    assert source[0] == 'symbol' and source[1] == r['path']
+                    assert source[2]['range']['start']['byte'] <= target[2]['range']['start']['byte']
+                    assert target[2]['range']['end']['byte'] <= source[2]['range']['end']['byte']
+        elif r['kind'] == 'imports':
+            assert r['derivation'] in {'rust_use_syntax', 'python_import_syntax'}
+            assert source[0] == 'file' and source[1] == r['path']
+            assert r['resolution'] == 'unresolved' and target is None
+            assert r['metadata']['kind'] == 'import'
+        else:
+            assert r['kind'] == 'references'
+            assert r['derivation'] in {'rust_call_syntax', 'python_call_syntax'}
+            assert source[0] == 'symbol' and source[1] == r['path']
+            assert r['metadata'] == {'kind': 'reference', 'context': 'call'}
+            if target is not None:
+                assert target[0] == 'symbol' and target[1] == r['path']
+            else:
+                assert r['resolution'] == 'unresolved'
     counts = coverage['counts']
     for k in ['files', 'symbols', 'relations']:
         assert counts[k + '_exported'] == len(d[k])
@@ -146,6 +181,7 @@ def validate(raw):
     assert type(d['evidence_schema_version']) is int and d['evidence_schema_version'] == 1
     o = d['observation']; c = d['coverage']; data = d['data']; feed = d['feed']
     assert o['atomic'] is False and c['complete'] is False
+    assert re.fullmatch('[a-f0-9]{64}', o['scope'])
     assert all(type(v) is int and v >= 0 for v in c['counts'].values())
     for key in ['git_head', 'base', 'head']:
         assert o[key] is None or re.fullmatch('[a-f0-9]{40}|[a-f0-9]{64}', o[key])
@@ -171,6 +207,10 @@ def validate(raw):
             for s in f['symbols']:
                 assert s['before_ref'] is None or s['before_ref'] in base
                 assert s['after_ref'] is None or s['after_ref'] in head
+                if s['before_ref'] is not None:
+                    assert s['before_ref'] in base
+                if s['after_ref'] is not None:
+                    assert s['after_ref'] in head
             for r in f['relations']:
                 assert r['resolution'] in RESOLUTION and r['derivation'] in DERIVATION
                 for side in ['before', 'after']:
@@ -190,7 +230,7 @@ def validate(raw):
             assert x['reasons'] == sorted(set(x['reasons']))
             for s in x['matched_symbols']:
                 symbol(s, {f['id']: f}); assert s['id'] not in ids; ids.add(s['id'])
-        assert ranks == sorted(set(ranks)) and all(type(r) is int and r > 0 for r in ranks)
+        assert ranks == sorted(set(ranks)) and all(type(r) is int and 1 <= r <= c['counts']['ranking_candidates'] for r in ranks)
         n = c['counts']; assert n['candidates_exported'] == len(ranks)
         assert n['ranking_candidates'] == len(ranks) + n.get('unrepresentable_candidates_omitted', 0) + n['candidate_limit_omitted']
         if data['change']:
@@ -208,10 +248,17 @@ def validate(raw):
             for key in ['provider_path', 'consumer_path', 'source_file']:
                 if r[key] is not None: safe(r[key])
         if data['impact']:
+            relations = data['relations']
             for x in data['impact']['candidates']:
                 assert x['repo'] in repos and len(x['direct_triggers']) <= 64
                 assert all(t['relation_id'] in ids for t in x['direct_triggers'])
-                assert all(0 <= e < len(data['relations']) for e in x['witness_edges'])
+                by_id = {r['id']: r for r in relations}
+                assert all(by_id[t['relation_id']]['consumer'] == x['repo'] for t in x['direct_triggers'])
+                assert all(type(e) is int and 0 <= e < len(relations) for e in x['witness_edges'])
+                chain = [relations[e] for e in x['witness_edges']]
+                assert all(a['consumer'] == b['provider'] for a, b in zip(chain, chain[1:]))
+                if chain:
+                    assert chain[-1]['consumer'] == x['repo']
     else:
         raise ValueError('feed')
     return d
