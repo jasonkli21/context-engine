@@ -1,0 +1,1485 @@
+{
+  "$defs": {
+    "Basis": {
+      "enum": [
+        "best_effort_worktree",
+        "committed_changed_pairs",
+        "mixed_time_workspace"
+      ],
+      "type": "string"
+    },
+    "Basis2": {
+      "enum": [
+        "observed_manifest_dependency",
+        "declared_workspace_mapping"
+      ],
+      "type": "string"
+    },
+    "Candidate": {
+      "properties": {
+        "change_distance": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "file": {
+          "$ref": "#/$defs/File"
+        },
+        "graph_distance": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "matched_symbols": {
+          "items": {
+            "$ref": "#/$defs/Symbol"
+          },
+          "type": "array"
+        },
+        "matched_symbols_omitted": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rank": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "score": {
+          "$ref": "#/$defs/Score"
+        }
+      },
+      "required": [
+        "rank",
+        "file",
+        "score",
+        "reasons",
+        "matched_symbols",
+        "matched_symbols_omitted",
+        "graph_distance",
+        "change_distance"
+      ],
+      "type": "object"
+    },
+    "Candidate2": {
+      "properties": {
+        "direct_triggers": {
+          "items": {
+            "$ref": "#/$defs/DirectTrigger"
+          },
+          "type": "array"
+        },
+        "direct_triggers_omitted": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "distance": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "repo": {
+          "type": "string"
+        },
+        "trigger_paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "witness_edges": {
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "repo",
+        "distance",
+        "reason",
+        "witness_edges",
+        "direct_triggers",
+        "direct_triggers_omitted",
+        "trigger_paths"
+      ],
+      "type": "object"
+    },
+    "CandidateChange": {
+      "properties": {
+        "ambiguous_symbol_keys": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "base": {
+          "type": "string"
+        },
+        "changed_files_observed": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "changed_symbols_observed": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "current_file_mappings": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "current_symbol_mappings": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "deleted_only_entities": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "head": {
+          "type": "string"
+        },
+        "unavailable_symbol_comparisons": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unmapped_symbols": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "base",
+        "head",
+        "changed_files_observed",
+        "changed_symbols_observed",
+        "current_file_mappings",
+        "current_symbol_mappings",
+        "unmapped_symbols",
+        "ambiguous_symbol_keys",
+        "unavailable_symbol_comparisons",
+        "deleted_only_entities"
+      ],
+      "type": "object"
+    },
+    "Candidates": {
+      "properties": {
+        "candidates": {
+          "items": {
+            "$ref": "#/$defs/Candidate"
+          },
+          "type": "array"
+        },
+        "change": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CandidateChange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fallback": {
+          "type": "boolean"
+        },
+        "ranker_version": {
+          "enum": [
+            "file-ranker-v1"
+          ]
+        },
+        "semantics": {
+          "enum": [
+            "ranked_metadata_not_content_selection"
+          ]
+        },
+        "sort_order": {
+          "type": "string"
+        },
+        "task_digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ranker_version",
+        "sort_order",
+        "semantics",
+        "task_digest",
+        "fallback",
+        "change",
+        "candidates"
+      ],
+      "type": "object"
+    },
+    "ChangedFile": {
+      "properties": {
+        "after": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Side"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ambiguous_keys": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "before": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Side"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "comparison_available": {
+          "type": "boolean"
+        },
+        "relation_comparison_available": {
+          "type": "boolean"
+        },
+        "relations": {
+          "items": {
+            "$ref": "#/$defs/RelationDelta"
+          },
+          "type": "array"
+        },
+        "similarity": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "symbols": {
+          "items": {
+            "$ref": "#/$defs/SymbolDelta"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "status",
+        "similarity",
+        "before",
+        "after",
+        "symbols",
+        "relations",
+        "ambiguous_keys",
+        "comparison_available",
+        "relation_comparison_available"
+      ],
+      "type": "object"
+    },
+    "ChangedPath": {
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "regular": {
+          "type": "boolean"
+        },
+        "side": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "side",
+        "regular"
+      ],
+      "type": "object"
+    },
+    "Changes": {
+      "properties": {
+        "base": {
+          "$ref": "#/$defs/Structure"
+        },
+        "base_coverage": {
+          "$ref": "#/$defs/Coverage"
+        },
+        "files": {
+          "items": {
+            "$ref": "#/$defs/ChangedFile"
+          },
+          "type": "array"
+        },
+        "head": {
+          "$ref": "#/$defs/Structure"
+        },
+        "head_coverage": {
+          "$ref": "#/$defs/Coverage"
+        },
+        "scope_prefix": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "base",
+        "head",
+        "base_coverage",
+        "head_coverage",
+        "files",
+        "scope_prefix"
+      ],
+      "type": "object"
+    },
+    "ContractKind": {
+      "enum": [
+        "api_schema",
+        "event_schema"
+      ],
+      "type": "string"
+    },
+    "Coverage": {
+      "properties": {
+        "complete": {
+          "const": false
+        },
+        "counts": {
+          "additionalProperties": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "limitations": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "complete",
+        "counts",
+        "limitations"
+      ],
+      "type": "object"
+    },
+    "DirectTrigger": {
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "relation_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "relation_id",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "Document": {
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "conclusion": {
+          "type": "string"
+        },
+        "coverage": {
+          "items": {
+            "$ref": "#/$defs/Gap"
+          },
+          "type": "array"
+        },
+        "impact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Impact"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "manifest_fingerprint": {
+          "type": "string"
+        },
+        "manifest_schema_version": {
+          "const": 1
+        },
+        "relations": {
+          "items": {
+            "$ref": "#/$defs/Relation2"
+          },
+          "type": "array"
+        },
+        "repositories": {
+          "items": {
+            "$ref": "#/$defs/Repository"
+          },
+          "type": "array"
+        },
+        "selector_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "selector_repo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sort_order": {
+          "type": "string"
+        },
+        "time_basis": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string"
+        },
+        "workspace_schema_version": {
+          "const": 2
+        }
+      },
+      "required": [
+        "workspace_schema_version",
+        "manifest_schema_version",
+        "command",
+        "workspace_id",
+        "manifest_fingerprint",
+        "time_basis",
+        "conclusion",
+        "sort_order",
+        "repositories",
+        "relations",
+        "coverage",
+        "impact",
+        "selector_repo",
+        "selector_path"
+      ],
+      "type": "object"
+    },
+    "Endpoint": {
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "kind",
+        "name"
+      ],
+      "type": "object"
+    },
+    "File": {
+      "properties": {
+        "analysis_status": {
+          "enum": [
+            "analyzed",
+            "unsupported_language",
+            "skipped_role",
+            "too_large",
+            "invalid_utf8",
+            "read_failed",
+            "parse_failed",
+            "analysis_limit_exceeded"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "language": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "relation_status": {
+          "enum": [
+            "analyzed",
+            "extraction_failed",
+            "analysis_limit_exceeded",
+            null
+          ]
+        },
+        "role": {
+          "type": "string"
+        },
+        "syntax_errors": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unsupported_relation_candidates": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "language",
+        "role",
+        "analysis_status",
+        "syntax_errors",
+        "relation_status",
+        "unsupported_relation_candidates"
+      ],
+      "type": "object"
+    },
+    "Gap": {
+      "properties": {
+        "locator": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "repo": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo",
+        "locator",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "Impact": {
+      "properties": {
+        "alternative_witnesses_omitted": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "base": {
+          "type": "string"
+        },
+        "candidates": {
+          "items": {
+            "$ref": "#/$defs/Candidate2"
+          },
+          "type": "array"
+        },
+        "changed_paths": {
+          "items": {
+            "$ref": "#/$defs/ChangedPath"
+          },
+          "type": "array"
+        },
+        "depth": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "depth_limited_edges": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "eligible_edges_examined": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "head": {
+          "type": "string"
+        },
+        "non_utf8_paths_omitted": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "traversal_truncated": {
+          "type": "boolean"
+        },
+        "trigger_omissions": {
+          "items": {
+            "$ref": "#/$defs/TriggerOmission"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "provider",
+        "base",
+        "head",
+        "depth",
+        "changed_paths",
+        "trigger_omissions",
+        "non_utf8_paths_omitted",
+        "candidates",
+        "traversal_truncated",
+        "eligible_edges_examined",
+        "alternative_witnesses_omitted",
+        "depth_limited_edges"
+      ],
+      "type": "object"
+    },
+    "Metadata": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "none",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "binding": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "import",
+              "type": "string"
+            },
+            "wildcard": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "binding",
+            "wildcard"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "context": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "reference",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "context"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Observation": {
+      "properties": {
+        "atomic": {
+          "const": false
+        },
+        "base": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "basis": {
+          "$ref": "#/$defs/Basis"
+        },
+        "git_dirty": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "git_head": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "head": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "basis",
+        "scope",
+        "atomic",
+        "git_head",
+        "git_dirty",
+        "base",
+        "head"
+      ],
+      "type": "object"
+    },
+    "Occurrences": {
+      "properties": {
+        "count": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "examples": {
+          "items": {
+            "$ref": "#/$defs/Range"
+          },
+          "type": "array"
+        },
+        "examples_omitted": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "count",
+        "examples",
+        "examples_omitted"
+      ],
+      "type": "object"
+    },
+    "Point": {
+      "properties": {
+        "byte": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "column": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "row": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "byte",
+        "row",
+        "column"
+      ],
+      "type": "object"
+    },
+    "Producer": {
+      "properties": {
+        "analysis_compat_version": {
+          "const": 1
+        },
+        "identity_version": {
+          "const": "evidence-id-v1"
+        },
+        "name": {
+          "const": "context-engine"
+        },
+        "parser_version": {
+          "const": null
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "analysis_compat_version",
+        "identity_version",
+        "parser_version"
+      ],
+      "type": "object"
+    },
+    "Range": {
+      "properties": {
+        "end": {
+          "$ref": "#/$defs/Point"
+        },
+        "start": {
+          "$ref": "#/$defs/Point"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "type": "object"
+    },
+    "Relation": {
+      "properties": {
+        "derivation": {
+          "enum": [
+            "repository_contains_file",
+            "lexical_range_containment",
+            "rust_use_syntax",
+            "python_import_syntax",
+            "rust_call_syntax",
+            "python_call_syntax"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "contains",
+            "imports",
+            "references"
+          ]
+        },
+        "language": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metadata": {
+          "$ref": "#/$defs/Metadata"
+        },
+        "path": {
+          "type": "string"
+        },
+        "range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Range"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resolution": {
+          "enum": [
+            "direct_structural",
+            "exact_same_file_qualified_name",
+            "unresolved"
+          ]
+        },
+        "source_ref": {
+          "type": "string"
+        },
+        "target_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unresolved_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "source_ref",
+        "target_ref",
+        "unresolved_name",
+        "kind",
+        "resolution",
+        "metadata",
+        "path",
+        "range",
+        "language",
+        "derivation"
+      ],
+      "type": "object"
+    },
+    "Relation2": {
+      "properties": {
+        "basis": {
+          "$ref": "#/$defs/Basis2"
+        },
+        "consumer": {
+          "type": "string"
+        },
+        "consumer_path": {
+          "type": "string"
+        },
+        "contract_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "contract_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContractKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/RelationKind"
+        },
+        "locator": {
+          "type": "string"
+        },
+        "package": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "type": "string"
+        },
+        "provider_package_fingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_file": {
+          "type": "string"
+        },
+        "source_fingerprint": {
+          "type": "string"
+        },
+        "source_repo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "validation": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "provider",
+        "consumer",
+        "kind",
+        "basis",
+        "provider_path",
+        "consumer_path",
+        "contract_id",
+        "contract_kind",
+        "package",
+        "provider_package_fingerprint",
+        "locator",
+        "source_file",
+        "source_repo",
+        "source_fingerprint",
+        "validation"
+      ],
+      "type": "object"
+    },
+    "RelationDelta": {
+      "properties": {
+        "after": {
+          "$ref": "#/$defs/Occurrences"
+        },
+        "before": {
+          "$ref": "#/$defs/Occurrences"
+        },
+        "derivation": {
+          "enum": [
+            "repository_contains_file",
+            "lexical_range_containment",
+            "rust_use_syntax",
+            "python_import_syntax",
+            "rust_call_syntax",
+            "python_call_syntax"
+          ]
+        },
+        "kind": {
+          "enum": [
+            "contains",
+            "imports",
+            "references"
+          ]
+        },
+        "metadata": {
+          "$ref": "#/$defs/Metadata"
+        },
+        "resolution": {
+          "enum": [
+            "direct_structural",
+            "exact_same_file_qualified_name",
+            "unresolved"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/Endpoint"
+        },
+        "target": {
+          "$ref": "#/$defs/Endpoint"
+        }
+      },
+      "required": [
+        "source",
+        "target",
+        "kind",
+        "resolution",
+        "metadata",
+        "derivation",
+        "before",
+        "after"
+      ],
+      "type": "object"
+    },
+    "RelationKind": {
+      "enum": [
+        "cargo_path_dependency",
+        "declared_contract_consumer"
+      ],
+      "type": "string"
+    },
+    "Repository": {
+      "properties": {
+        "dirty": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "git_known": {
+          "type": "boolean"
+        },
+        "head": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "observation": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "head",
+        "dirty",
+        "git_known",
+        "observation"
+      ],
+      "type": "object"
+    },
+    "Score": {
+      "properties": {
+        "centrality": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "change": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "graph": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lexical_path": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lexical_symbol": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "role": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "total",
+        "lexical_path",
+        "lexical_symbol",
+        "graph",
+        "role",
+        "change",
+        "centrality"
+      ],
+      "type": "object"
+    },
+    "Side": {
+      "properties": {
+        "mode": {
+          "type": "string"
+        },
+        "object_id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "mode",
+        "object_id"
+      ],
+      "type": "object"
+    },
+    "Structure": {
+      "properties": {
+        "files": {
+          "items": {
+            "$ref": "#/$defs/File"
+          },
+          "type": "array"
+        },
+        "relations": {
+          "items": {
+            "$ref": "#/$defs/Relation"
+          },
+          "type": "array"
+        },
+        "repository_ref": {
+          "type": "string"
+        },
+        "symbols": {
+          "items": {
+            "$ref": "#/$defs/Symbol"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "repository_ref",
+        "files",
+        "symbols",
+        "relations"
+      ],
+      "type": "object"
+    },
+    "Subject": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "repository",
+              "type": "string"
+            },
+            "repository_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "repository_id"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "workspace",
+              "type": "string"
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "workspace_id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Symbol": {
+      "properties": {
+        "derivation": {
+          "enum": [
+            "parser_definition"
+          ]
+        },
+        "file_ref": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "module",
+            "class",
+            "struct",
+            "enum",
+            "union",
+            "trait",
+            "function",
+            "method",
+            "type_alias",
+            "constant",
+            "static"
+          ]
+        },
+        "language": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "name_range": {
+          "$ref": "#/$defs/Range"
+        },
+        "path": {
+          "type": "string"
+        },
+        "qualified_name": {
+          "type": "string"
+        },
+        "range": {
+          "$ref": "#/$defs/Range"
+        }
+      },
+      "required": [
+        "id",
+        "file_ref",
+        "path",
+        "language",
+        "kind",
+        "name",
+        "qualified_name",
+        "range",
+        "name_range",
+        "derivation"
+      ],
+      "type": "object"
+    },
+    "SymbolDelta": {
+      "properties": {
+        "after_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "before_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "enum": [
+            "added",
+            "removed",
+            "modified"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "before_ref",
+        "after_ref"
+      ],
+      "type": "object"
+    },
+    "TriggerOmission": {
+      "properties": {
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "side": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "side",
+        "reason"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/Structure"
+        },
+        "feed": {
+          "const": "structure",
+          "type": "string"
+        }
+      },
+      "required": [
+        "feed",
+        "data"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/Changes"
+        },
+        "feed": {
+          "const": "changes",
+          "type": "string"
+        }
+      },
+      "required": [
+        "feed",
+        "data"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/Candidates"
+        },
+        "feed": {
+          "const": "candidates",
+          "type": "string"
+        }
+      },
+      "required": [
+        "feed",
+        "data"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/Document"
+        },
+        "feed": {
+          "const": "workspace",
+          "type": "string"
+        }
+      },
+      "required": [
+        "feed",
+        "data"
+      ],
+      "type": "object"
+    }
+  ],
+  "properties": {
+    "coverage": {
+      "$ref": "#/$defs/Coverage"
+    },
+    "evidence_schema_version": {
+      "const": 1
+    },
+    "observation": {
+      "$ref": "#/$defs/Observation"
+    },
+    "producer": {
+      "$ref": "#/$defs/Producer"
+    },
+    "subject": {
+      "$ref": "#/$defs/Subject"
+    }
+  },
+  "required": [
+    "evidence_schema_version",
+    "producer",
+    "subject",
+    "observation",
+    "coverage"
+  ],
+  "title": "Document",
+  "type": "object"
+}

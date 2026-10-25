@@ -12,7 +12,7 @@ use std::{
 };
 pub const MAX_VISITS: usize = 4096;
 pub const MAX_DIRECT_TRIGGERS_PER_CANDIDATE: usize = 64;
-#[derive(Serialize)]
+#[derive(Serialize, schemars::JsonSchema)]
 pub struct Impact {
     pub provider: String,
     pub base: String,
@@ -27,24 +27,24 @@ pub struct Impact {
     pub alternative_witnesses_omitted: usize,
     pub depth_limited_edges: usize,
 }
-#[derive(Serialize)]
+#[derive(Serialize, schemars::JsonSchema)]
 pub struct ChangedPath {
     pub path: String,
     pub side: &'static str,
     pub regular: bool,
 }
-#[derive(Serialize)]
+#[derive(Serialize, schemars::JsonSchema)]
 pub struct TriggerOmission {
     pub path: Option<String>,
     pub side: &'static str,
     pub reason: &'static str,
 }
-#[derive(Serialize)]
+#[derive(Serialize, schemars::JsonSchema)]
 pub struct DirectTrigger {
     pub relation_id: String,
     pub reason: &'static str,
 }
-#[derive(Serialize)]
+#[derive(Serialize, schemars::JsonSchema)]
 pub struct Candidate {
     pub repo: String,
     pub distance: usize,

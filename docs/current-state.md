@@ -2,11 +2,24 @@
 
 **Last updated:** 2026-10-24
 
-**Active phase:** Phase 10 — Cross-Repository Intelligence
+**Active phase:** Phase 11 — Context Integrity Evidence Adapter
 
-**Overall status:** Phase 10 implemented locally; independent Phase 10 review and maintainer acceptance pending
+**Overall status:** Phase 11 implemented locally; fresh independent review and maintainer acceptance pending
 
 ## Delivered
+
+- Phase 11 adds JSON-only `evidence structure`, `changes`, `candidates` and
+  `workspace` feeds under independent evidence schema v1. Logical repository IDs,
+  observation/revision-scoped references, source provenance and explicit coverage
+  remain descriptive. Current/workspace observations are non-atomic; changes use
+  actual immutable Git objects. Unsafe/native identities are omitted with counts
+  or fail closed when essential.
+- Candidates share `file-ranker-v1` without content selection or bodies. Workspace
+  preserves the Phase 10 v2 inspection/optional impact DTO, including typed direct
+  triggers and witness omissions. Fully escaped output including LF is capped at
+  8 MiB before stdout. Existing CLI schemas, HTTP/MCP vocabulary and cache/index
+  versions remain unchanged. Contract, schema and independent Python consumer
+  fixtures accompany [implementation evidence](reports/phase-11-implementation-report.md).
 
 - Phase 10 adds invocation-local strict manifest v1 registration, native canonical
   root containment, stable logical repo identities, observed static Cargo root
@@ -172,6 +185,16 @@ Evidence: [Phase 5 review-fix report](reports/phase-5-review-fix-report.md),
 [Phase 2 review-fix report](reports/phase-2-review-fix-report.md).
 
 ## Acceptance and verification
+
+- The maintainer explicitly authorized Phase 11 from `05b9b10` while Phase 10
+  re-review remains pending, requested one commit and prohibited subagents. Both
+  pre-existing untracked plans were preserved outside the commit. The canonical
+  verifier passed locally with 115 unit / 103 integration tests, including all
+  HTTP/MCP regressions. All-target check, release build and independent decoding
+  of real Rust/Python evidence passed. The existing Python context consumer still
+  rejects qualified matched names; this consumer limitation and successful
+  compatible requests are detailed in the Phase 11 report. This is implementation
+  evidence, not Phase 11 or any earlier phase's independent acceptance.
 
 - The maintainer directly authorized Phase 10 from `39c87cfa` and requested one
   implementation commit, without subagents. The pre-existing untracked Phase 10
@@ -380,6 +403,12 @@ reported in query coverage. Existing parse recovery, scanner/Git limitations and
 filesystem TOCTOU races remain; results are not atomic snapshots.
 
 ## Next step
+
+Fresh independent Phase 11 review of the evidence-v1 contract and consumer,
+reference scoping/integrity, privacy/resource boundaries, actual production
+composition, candidate ranking parity and preserved workspace v2 semantics.
+Maintainer acceptance remains pending; no earlier pending decision is changed.
+
 
 Fresh independent Phase 10 re-review of the CE10-01–CE10-05 fixes, including the
 workspace JSON v2 evidence and identity contract, committed trigger omissions,

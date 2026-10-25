@@ -38,9 +38,12 @@ Primary question:
 
 > **Does the observed evidence align with what should be trusted or should hold?**
 
-## Future evidence contract
+## Evidence v1 opt-in contract
 
-Externally consumed code facts should eventually carry enough provenance to identify:
+Phase 11 adds `ctx evidence structure|changes|candidates|workspace` with logical IDs,
+scoped references, nullable revision metadata and explicit coverage. See the
+[normative contract](../contracts/context-integrity-evidence-v1.md) and JSON Schema.
+Facts carry provenance to identify:
 
 ```text
 repository
@@ -58,4 +61,7 @@ Context Integrity should consume this via an adapter/query contract. The project
 
 Do not add document authority, supersession, architectural rule ownership, or drift policy to Context Engine merely to make a future integration convenient. Likewise, Context Integrity should not permanently duplicate the parser/index/graph engine once this project exposes stable evidence.
 
-The first deliberate integration is a later roadmap phase, not a Phase 0 requirement.
+The existing Python provider still consumes unchanged `ctx context` and `ctx graph`
+schema v1. Evidence v1 is an additive opt-in seam; no Python consumer migration or
+policy implementation is included. The four body-free feeds are validated by an
+independent offline subprocess decoder in the engine tests.

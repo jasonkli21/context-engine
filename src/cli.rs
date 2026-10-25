@@ -17,6 +17,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Export body-free descriptive evidence (independent schema v1).
+    Evidence(EvidenceArgs),
     /// Inspect local cross-repository candidate consumer evidence.
     Workspace(WorkspaceArgs),
     /// Serve authenticated read-only HTTP on a loopback IP.
@@ -281,5 +283,55 @@ pub enum WorkspaceCommand {
         change: String,
         #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=3))]
         depth: u8,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct EvidenceArgs {
+    #[command(subcommand)]
+    pub command: EvidenceCommand,
+}
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum EvidenceFormat {
+    Json,
+}
+#[derive(Debug, Args)]
+pub struct EvidenceRoot {
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+    #[arg(long)]
+    pub repository_id: String,
+    #[arg(long, value_enum, default_value = "json")]
+    pub format: EvidenceFormat,
+}
+#[derive(Debug, Subcommand)]
+pub enum EvidenceCommand {
+    Structure(EvidenceRoot),
+    Changes {
+        range: String,
+        #[command(flatten)]
+        root: EvidenceRoot,
+    },
+    Candidates {
+        #[command(flatten)]
+        root: EvidenceRoot,
+        #[arg(long)]
+        task: String,
+        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u16).range(1..=200))]
+        limit: u16,
+        #[arg(long)]
+        change: Option<String>,
+    },
+    Workspace {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long, requires = "change")]
+        repo: Option<String>,
+        #[arg(long, requires = "repo")]
+        change: Option<String>,
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=3))]
+        depth: u8,
+        #[arg(long, value_enum, default_value = "json")]
+        format: EvidenceFormat,
     },
 }

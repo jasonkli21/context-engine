@@ -626,7 +626,7 @@ committed generation. Normal process termination is sufficient.
 
 Historical caches, full-text search and parallel parsers remain deferred.
 Phase 8 on-demand history is separate from current-state storage. Phase 9 adapters
-reuse this reconciliation boundary; Phase 11 evidence exports remain future work.
+reuse this reconciliation boundary; Phase 11 supplies a separate body-free evidence CLI contract.
 
 ### Phase 9 application and adapters
 
@@ -791,7 +791,7 @@ Context Integrity is a downstream consumer, not an internal module.
 - stale documentation judgments;
 - drift/governance.
 
-Future integration should occur through a stable evidence/query contract, not a shared database requirement.
+Phase 11 exposes an additive evidence v1 CLI contract without shared storage.
 
 Externally consumed evidence should eventually carry repository identity, revision, entity identity, file/range, derivation method, and analyzer version where relevant.
 
@@ -1029,3 +1029,22 @@ the manifest remains v1. No new persistence or scanner/parser/index relation
 semantics are introduced; `INDEX_COMPAT_VERSION` 1, `SCHEMA_VERSION` 3 and
 freshness-v2 remain appropriate.
 No daemon worker, implicit neighbor enrollment, source execution or network is added.
+
+
+### Phase 11 evidence projection
+
+`ctx evidence` dispatches to `evidence.rs`, which composes synchronous application
+analysis/ranking/workspace use cases and committed `change::analyze`. Explicit
+feed DTOs own the new public schema. Structure and changes map domain graph facts
+to scoped logical references; candidate ranking bypasses content selection.
+Workspace reuses the explicit v2 output DTO, including optional committed impact.
+A bounded serializer retains the entire response before stdout, including an
+8 MiB wire cap. Existing HTTP/MCP request types and CLI schemas are unchanged.
+
+Current scopes are opaque invocation namespaces, not source fingerprints;
+committed scopes derive from actual commit IDs and Git scan prefix. Current and
+workspace observations remain non-atomic. Exported metadata is sensitive even
+without bodies. Unsafe/native identities are omitted/countable in structure and
+fail closed when essential to change/workspace references. See the normative
+[evidence v1 contract](contracts/context-integrity-evidence-v1.md), schema and
+separate Python semantic validator for the exact compatibility boundary.

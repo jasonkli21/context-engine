@@ -70,7 +70,10 @@ impl Application {
     fn graph(&self) -> Result<Outcome<graph::RepositoryGraph>> {
         self.graph_with_probe(true)
     }
-    fn graph_with_probe(&self, probe_git: bool) -> Result<Outcome<graph::RepositoryGraph>> {
+    pub(crate) fn graph_with_probe(
+        &self,
+        probe_git: bool,
+    ) -> Result<Outcome<graph::RepositoryGraph>> {
         let r = self.analysis_with_probe(false, probe_git)?;
         Ok(Outcome {
             data: graph::from_analysis(r.data.index, r.data.relation_files)?,
@@ -128,6 +131,14 @@ impl Application {
             warnings: r.warnings,
         })
     }
+    pub fn changes(&self, range: &str) -> Result<change::ChangeSet> {
+        change::analyze(
+            &self.options.root,
+            range,
+            self.options.max_parse_file_bytes,
+            None,
+        )
+    }
     pub fn impact(&self, range: &str, depth: u8) -> Result<change::ChangeSet> {
         if depth > graph::MAX_DEPTH {
             return Err("depth must be between 0 and 8".into());
@@ -138,6 +149,29 @@ impl Application {
             self.options.max_parse_file_bytes,
             Some(depth),
         )
+    }
+    /// Rank metadata only: never enters select/source::load's content path.
+    pub fn candidates(&self, text: &str, change: Option<&str>) -> Result<Outcome<Candidates>> {
+        let task = context::Task::parse(text)?;
+        let r = self.graph()?;
+        let changes = change
+            .map(|range| {
+                context::compatible_change(&r.data, range, self.options.max_parse_file_bytes)
+            })
+            .transpose()?;
+        let ranking = context::rank(&r.data, &task, changes.as_ref());
+        if let Some(c) = &changes {
+            context::recheck_snapshot(&r.data, &c.head)?;
+        }
+        Ok(Outcome {
+            data: Candidates {
+                graph: r.data,
+                task,
+                ranking,
+                changes,
+            },
+            warnings: r.warnings,
+        })
     }
     pub fn context(
         &self,
@@ -229,4 +263,11 @@ pub fn workspace_consumers(
         e.provider == repo && path.is_none_or(|p| e.provider_path.as_deref() == Some(p))
     });
     Ok(w)
+}
+
+pub struct Candidates {
+    pub graph: graph::RepositoryGraph,
+    pub task: context::Task,
+    pub ranking: context::Ranking,
+    pub changes: Option<context::ChangeSignal>,
 }

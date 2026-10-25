@@ -877,3 +877,22 @@ clone, or implicit enrollment. HTTP and MCP remain single-root with the same fiv
 operations. Multi-root adapters, source bundles and the Context Integrity adapter
 are deferred. Review and maintainer acceptance remain pending; see the
 [Phase 10 implementation report](docs/reports/phase-10-implementation-report.md).
+
+
+### Body-free evidence export
+
+```sh
+ctx evidence structure . --repository-id engine --format json
+ctx evidence changes HEAD~1..HEAD . --repository-id engine --format json
+ctx evidence candidates . --repository-id engine --task 'indexing' --limit 50
+ctx evidence workspace --manifest ./workspace.json
+ctx evidence workspace --manifest ./workspace.json --repo engine --change HEAD~1..HEAD
+```
+
+These JSON-only [evidence v1 feeds](docs/contracts/context-integrity-evidence-v1.md)
+export descriptive metadata and explicit coverage without source bodies. Candidates
+are ranked metadata, not a byte-budget-selected context bundle. Current and
+workspace observations are best effort and non-atomic; committed changes identify
+actual Git objects. Logical repository IDs are required. The complete response,
+including escaping and final newline, is capped at 8 MiB; errors leave stdout empty.
+Existing graph/context/diff/workspace schemas and HTTP/MCP tools are unchanged.

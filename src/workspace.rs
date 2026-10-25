@@ -31,7 +31,7 @@ struct Registration {
     id: String,
     root: PathBuf,
 }
-#[derive(Clone, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ContractKind {
     ApiSchema,
@@ -45,7 +45,7 @@ struct Contract {
     provider: Endpoint,
     consumers: Vec<Endpoint>,
 }
-#[derive(Clone, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Endpoint {
     pub repo: String,
@@ -67,19 +67,19 @@ pub struct Repository {
     pub dirty: Option<bool>,
     pub git_known: bool,
 }
-#[derive(Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Serialize, PartialEq, Eq, PartialOrd, Ord, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RelationKind {
     CargoPathDependency,
     DeclaredContractConsumer,
 }
-#[derive(Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Serialize, PartialEq, Eq, PartialOrd, Ord, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Basis {
     ObservedManifestDependency,
     DeclaredWorkspaceMapping,
 }
-#[derive(Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Serialize, PartialEq, Eq, PartialOrd, Ord, schemars::JsonSchema)]
 pub struct Relation {
     pub id: String,
     pub provider: String,
@@ -98,7 +98,7 @@ pub struct Relation {
     pub source_fingerprint: String,
     pub validation: &'static str,
 }
-#[derive(Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Serialize, PartialEq, Eq, PartialOrd, Ord, schemars::JsonSchema)]
 pub struct Gap {
     pub repo: String,
     pub locator: String,

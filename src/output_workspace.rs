@@ -5,7 +5,7 @@ use crate::{
     workspace_impact::Impact,
 };
 use serde::Serialize;
-#[derive(Serialize)]
+#[derive(Serialize, schemars::JsonSchema)]
 pub struct Repository<'a> {
     id: &'a str,
     head: &'a Option<String>,
@@ -13,7 +13,7 @@ pub struct Repository<'a> {
     git_known: bool,
     observation: &'static str,
 }
-#[derive(Serialize)]
+#[derive(Serialize, schemars::JsonSchema)]
 pub struct Document<'a> {
     workspace_schema_version: u32,
     manifest_schema_version: u32,

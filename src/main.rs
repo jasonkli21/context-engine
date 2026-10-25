@@ -4,6 +4,7 @@ mod change;
 mod classify;
 mod cli;
 mod context;
+mod evidence;
 mod git;
 mod graph;
 mod history;
@@ -38,6 +39,9 @@ use std::{
 fn run() -> Result<(), application::Error> {
     let cli = Cli::parse();
     let rendered = match cli.command {
+        Command::Evidence(args) => evidence::command(args).map_err(
+            |_| "evidence export failed; check selectors, input coverage and output limits",
+        )?,
         Command::Workspace(args) => workspace_command(args)?,
         Command::Serve(args) => {
             let app = application::Application::pinned(&args.path)?;

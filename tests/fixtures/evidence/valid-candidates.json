@@ -1,0 +1,134 @@
+{
+  "evidence_schema_version": 1,
+  "producer": {
+    "name": "context-engine",
+    "version": "0.1.0",
+    "analysis_compat_version": 1,
+    "identity_version": "evidence-id-v1",
+    "parser_version": null
+  },
+  "subject": {
+    "kind": "repository",
+    "repository_id": "fixture"
+  },
+  "observation": {
+    "basis": "best_effort_worktree",
+    "scope": "901b0ef56d5b2090b5718b3d7248befe4b82ad7f14a3b9884d039f780566a073",
+    "atomic": false,
+    "git_head": null,
+    "git_dirty": null,
+    "base": null,
+    "head": null
+  },
+  "coverage": {
+    "complete": false,
+    "counts": {
+      "analysis_analyzed": 1,
+      "candidate_limit_omitted": 0,
+      "candidates_exported": 1,
+      "diagnostics_withheld": 0,
+      "eligible_files": 1,
+      "excluded_role_files": 0,
+      "fallback_candidates_omitted": 0,
+      "files_observed": 1,
+      "graph_truncated": 0,
+      "ranking_candidates": 1,
+      "ranking_roots": 2,
+      "ranking_roots_omitted": 0,
+      "reconciliation_warnings_withheld": 0,
+      "relations_analyzed": 1,
+      "scan_warnings_withheld": 0,
+      "sensitive_files_omitted": 0,
+      "syntax_errors": 0,
+      "task_terms": 1,
+      "task_terms_truncated": 0,
+      "unresolved_names": 1,
+      "unsupported_relation_candidates": 0
+    },
+    "limitations": [
+      "scanner_exclusions_apply",
+      "syntax_not_compiler_binding",
+      "raw_diagnostics_withheld",
+      "best_effort_non_atomic",
+      "ranked_metadata_not_content_selection"
+    ]
+  },
+  "feed": "candidates",
+  "data": {
+    "ranker_version": "file-ranker-v1",
+    "sort_order": "total_desc,symbol_desc,path_desc,change_desc,graph_desc,centrality_desc,native_path_asc",
+    "semantics": "ranked_metadata_not_content_selection",
+    "task_digest": "cb4c1850e583b35c76724d45901a4c3a1bad278f38a60ac1e47c4a2db75c928d",
+    "fallback": false,
+    "change": null,
+    "candidates": [
+      {
+        "rank": 1,
+        "file": {
+          "id": "4578d93e52cd4090192cdd2ea0b13820bfe97fb61ca53f1199abd9c272d4598b",
+          "path": "a.py",
+          "language": "Python",
+          "role": "Source",
+          "analysis_status": "analyzed",
+          "syntax_errors": 0,
+          "relation_status": "analyzed",
+          "unsupported_relation_candidates": 0
+        },
+        "score": {
+          "total": 91,
+          "lexical_path": 42,
+          "lexical_symbol": 45,
+          "graph": 0,
+          "role": 0,
+          "change": 0,
+          "centrality": 4
+        },
+        "reasons": [
+          "centrality_activity",
+          "path_component_exact",
+          "path_phrase",
+          "symbol_qualified_exact"
+        ],
+        "matched_symbols": [
+          {
+            "id": "5f76dae2ce8faf147340375522877daa20e7d3cce9f73eed856372ab9c86d1e3",
+            "file_ref": "4578d93e52cd4090192cdd2ea0b13820bfe97fb61ca53f1199abd9c272d4598b",
+            "path": "a.py",
+            "language": "Python",
+            "kind": "function",
+            "name": "a",
+            "qualified_name": "a",
+            "range": {
+              "start": {
+                "byte": 16,
+                "row": 1,
+                "column": 0
+              },
+              "end": {
+                "byte": 32,
+                "row": 2,
+                "column": 7
+              }
+            },
+            "name_range": {
+              "start": {
+                "byte": 20,
+                "row": 1,
+                "column": 4
+              },
+              "end": {
+                "byte": 21,
+                "row": 1,
+                "column": 5
+              }
+            },
+            "derivation": "parser_definition"
+          }
+        ],
+        "matched_symbols_omitted": 0,
+        "graph_distance": null,
+        "change_distance": null
+      }
+    ]
+  }
+}

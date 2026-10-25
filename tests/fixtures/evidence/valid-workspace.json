@@ -1,0 +1,65 @@
+{
+  "evidence_schema_version": 1,
+  "producer": {
+    "name": "context-engine",
+    "version": "0.1.0",
+    "analysis_compat_version": 1,
+    "identity_version": "evidence-id-v1",
+    "parser_version": null
+  },
+  "subject": {
+    "kind": "workspace",
+    "workspace_id": "sample"
+  },
+  "observation": {
+    "basis": "mixed_time_workspace",
+    "scope": "f8518535bfc75169170fa28372baa54f4618401718321c9737821948453fff14",
+    "atomic": false,
+    "git_head": null,
+    "git_dirty": null,
+    "base": null,
+    "head": null
+  },
+  "coverage": {
+    "complete": false,
+    "counts": {
+      "workspace_gaps": 1
+    },
+    "limitations": [
+      "best_effort_non_atomic",
+      "mixed_time_not_synchronized",
+      "candidate_consumers_only"
+    ]
+  },
+  "feed": "workspace",
+  "data": {
+    "workspace_schema_version": 2,
+    "manifest_schema_version": 1,
+    "command": "inspect",
+    "workspace_id": "sample",
+    "manifest_fingerprint": "e4e90ad8411b3ef240c52ac3865116721e48303a7612b1df634b4ce4734943dd",
+    "time_basis": "current_working_tree_best_effort",
+    "conclusion": "candidate_consumers_only_no_proven_breakage_or_completeness",
+    "sort_order": "repositories_by_id_relations_by_provider_consumer_kind_paths_breadth_first_representative_witness_direct_triggers_by_contract_priority_and_relation_id",
+    "repositories": [
+      {
+        "id": "fixture",
+        "head": "f6ef76233ddf93b09f324cd44f83dac94e3b80f5",
+        "dirty": false,
+        "git_known": true,
+        "observation": "best_effort_non_atomic"
+      }
+    ],
+    "relations": [],
+    "coverage": [
+      {
+        "repo": "fixture",
+        "locator": "Cargo.toml",
+        "reason": "cargo_manifest_unavailable_or_oversize"
+      }
+    ],
+    "impact": null,
+    "selector_repo": null,
+    "selector_path": null
+  }
+}
