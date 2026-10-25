@@ -815,13 +815,16 @@ are rejected. Declarations validate file availability, **not runtime usage**.
 
 Observed `cargo_path_dependency` relationships require a bounded static root
 `Cargo.toml`, an ordinary direct `[dependencies]` path resolving exactly to another
-registered root, and an equal package name (`package` supports aliases). No Cargo
-command or source code runs. Optional dependencies are potential declarations;
-feature activation and version compatibility are not proved. Workspace packages,
-workspace inheritance, target/dev/build scopes, registry dependencies, patches,
+registered root, and an equal package name (`package` supports aliases). A root
+package with an explicit name may also declare `[workspace]`; the root package is
+checked and member discovery is reported as omitted coverage. Virtual workspace
+roots and `package.workspace` identity inheritance remain unsupported. A dependency
+using `workspace = true`, target/dev/build scopes, registry dependencies, patches,
 unregistered subpackages, invalid/unreadable manifests and unsupported values are
-explicit coverage gaps. Both observed manifests carry actual byte fingerprints;
-workspace declarations identify the manifest fingerprint and contract ID locator.
+explicit coverage gaps. No Cargo command or source code runs. Optional dependencies
+are potential declarations; feature activation and version compatibility are not
+proved. Both observed manifests carry actual byte fingerprints; workspace
+declarations identify the manifest fingerprint and contract ID locator.
 
 Impact reuses immutable two-dot Git diff evidence, including both rename/delete
 sides and nested root scopes. Exact changed regular contract paths yield declared
@@ -829,21 +832,32 @@ candidates, including deleted provider files evidenced in the committed base whe
 consumer files remain readable. Package candidates require a changed regular
 `Cargo.toml`, `build.rs`, or file classified as source by the existing classifier;
 docs/tests/configuration/schema changes alone do not trigger a package candidate.
-This coarse rule does not model Cargo packaging or custom build inputs. Further
-hops follow only supported package edges, never another declaration automatically.
-Depth is 1–3. Candidates deduplicate by logical repo; breadth-first traversal takes
-the first witness in provider/consumer/kind/path/contract/locator order and reports
-alternate witnesses and depth-limited edges. Witness indices reference that
-response's sorted relations; relation IDs hash structural evidence keys, not roots.
+This coarse rule does not model Cargo packaging or custom build inputs. For each
+committed changed side, `impact.trigger_omissions` records paths not assessed as
+coarse package triggers (`role_not_package_trigger`), non-regular paths, and
+non-UTF-8 paths that cannot be displayed. A path may still match an exact declared
+contract even when it is outside coarse package coverage. Further hops follow only
+supported package edges, never another declaration automatically. Depth is 1–3.
+Candidates deduplicate by logical repo and retain up to 64 sorted direct relation
+IDs, with `direct_triggers_omitted` for excess evidence. Exact declared matches rank
+ahead of coarse package evidence in the summary reason; the representative witness
+chain remains shortest and deterministic. Depth-limited and alternate transitive
+witness counts remain visible. Witness indices reference that response's sorted
+relations.
 
-Workspace JSON uses `workspace_schema_version: 1`, separately from existing CLI
-and adapter schemas. It includes committed base/head, both-sided trigger paths,
-provenance, coverage, first witness chains, and best-effort HEAD/dirty/unknown per
-registration. Relationship evidence comes from **current working trees**, even
-when provider changes are committed. This mixed time basis is not an atomic
-multi-repository snapshot or a breaking-change verdict. Zero candidates means no
-supported match within coverage. Text selectors cannot represent non-UTF-8 names;
-committed non-UTF-8 path omissions are counted without lossy matching.
+Workspace JSON uses `workspace_schema_version: 2`, separately from existing CLI
+and adapter schemas. Version 2 adds direct-trigger evidence, typed change-trigger
+omissions, and relationship IDs whose semantic tuple includes contract kind. The
+tuple uses logical provider/consumer IDs, relation and contract kinds, selectors,
+contract ID, and locator; it excludes physical roots and volatile fingerprints.
+Human `consumers` output includes consumer paths, contract kind/ID, relation IDs and
+source fingerprints. Responses include committed base/head, both-sided trigger
+paths, provenance, coverage and best-effort HEAD/dirty/unknown per registration.
+Relationship evidence comes from **current working trees**, even when provider
+changes are committed. This mixed time basis is not an atomic multi-repository
+snapshot or a breaking-change verdict. Zero candidates means no supported match
+within coverage. Text selectors cannot represent non-UTF-8 names; committed
+non-UTF-8 path omissions are counted without lossy matching.
 
 Limits: 1 MiB manifest; 16 repos; 256 contracts; 1,024 consumer mappings and
 1,024 examined Cargo dependencies across the workspace; 256 KiB per Cargo manifest

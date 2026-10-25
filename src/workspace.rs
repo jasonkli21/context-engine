@@ -323,10 +323,13 @@ pub fn inspect(manifest: &Path) -> Result<Workspace> {
         .iter_mut()
         .chain(&mut w.unavailable_provider_relations)
     {
+        // Workspace schema v2 relation identity. Keep the logical relationship
+        // tuple independent of physical roots and volatile manifest fingerprints.
         let key = serde_json::to_vec(&(
             &edge.provider,
             &edge.consumer,
             &edge.kind,
+            &edge.contract_kind,
             &edge.provider_path,
             &edge.consumer_path,
             &edge.contract_id,
@@ -364,20 +367,32 @@ fn cargo_edges(w: &mut Workspace) -> Result<()> {
             w.gap(&name, "Cargo.toml", "invalid_cargo_toml")?;
             continue;
         };
-        if document.get("workspace").is_some()
-            || document
-                .get("package")
-                .and_then(|p| p.get("workspace"))
-                .is_some()
-        {
-            w.gap(&name, "Cargo.toml", "cargo_workspace_unsupported")?;
+        let Some(package_table) = document.get("package").and_then(toml::Value::as_table) else {
+            w.gap(
+                &name,
+                "Cargo.toml",
+                if document.get("workspace").is_some() {
+                    "cargo_virtual_workspace_unsupported"
+                } else {
+                    "root_package_identity_unavailable"
+                },
+            )?;
+            continue;
+        };
+        if package_table.get("workspace").is_some() {
+            w.gap(&name, "Cargo.toml", "cargo_package_identity_inherited")?;
             continue;
         }
-        let Some(package) = document
-            .get("package")
-            .and_then(|p| p.get("name"))
-            .and_then(|v| v.as_str())
-        else {
+        if document.get("workspace").is_some() {
+            // The root package remains inspectable, but member discovery is out
+            // of scope, so only this explicit root package will be considered.
+            w.gap(
+                &name,
+                "workspace/members",
+                "cargo_workspace_members_not_discovered",
+            )?;
+        }
+        let Some(package) = package_table.get("name").and_then(toml::Value::as_str) else {
             w.gap(&name, "Cargo.toml", "root_package_identity_unavailable")?;
             continue;
         };

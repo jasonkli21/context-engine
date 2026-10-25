@@ -32,13 +32,16 @@ fn commit(root: &Path) -> String {
     git(root, &["rev-parse", "HEAD"])
 }
 struct Fixture {
-    dir: TempDir,
+    _dir: TempDir,
+    root: PathBuf,
     manifest: PathBuf,
     value: Value,
+    relocated: Option<PathBuf>,
 }
 impl Fixture {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
+        let root_dir = dir.path().to_path_buf();
         for name in ["provider", "consumer", "downstream", "client"] {
             let root = dir.path().join(name);
             fs::create_dir(&root).unwrap();
@@ -84,9 +87,11 @@ impl Fixture {
             "contracts":[{"id":"api","kind":"api_schema","provider":{"repo":"provider","path":"schemas/api.yaml"},
                 "consumers":[{"repo":"client","path":"src/client.py"}]}]});
         let f = Self {
-            dir,
+            _dir: dir,
+            root: root_dir,
             manifest,
             value,
+            relocated: None,
         };
         f.save();
         f
@@ -95,15 +100,18 @@ impl Fixture {
         fs::write(&self.manifest, serde_json::to_vec(&self.value).unwrap()).unwrap();
     }
     fn root(&self, name: &str) -> PathBuf {
-        self.dir.path().join(name)
+        self.root.join(name)
     }
     fn run(&self, args: &[&str]) -> Output {
+        self.run_format(args, "json")
+    }
+    fn run_format(&self, args: &[&str], format: &str) -> Output {
         Command::new(env!("CARGO_BIN_EXE_ctx"))
             .args(["workspace"])
             .args(args)
             .arg("--manifest")
             .arg(&self.manifest)
-            .args(["--format", "json"])
+            .args(["--format", format])
             .output()
             .unwrap()
     }
@@ -121,12 +129,31 @@ impl Fixture {
         assert!(!out.status.success());
         assert!(out.stdout.is_empty());
     }
+    fn relocate(&mut self) {
+        let old = self.root.clone();
+        let moved = old.with_file_name(format!(
+            "{}-moved",
+            old.file_name().unwrap().to_string_lossy()
+        ));
+        assert!(!moved.exists());
+        fs::rename(&old, &moved).unwrap();
+        self.root = moved.clone();
+        self.manifest = moved.join("workspace.json");
+        self.relocated = Some(moved);
+    }
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        if let Some(path) = &self.relocated {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
 }
 #[test]
 fn registry_observed_alias_declared_consumers_and_determinism() {
     let mut f = Fixture::new();
     let a = f.ok(&["inspect"]);
-    assert_eq!(a["workspace_schema_version"], 1);
+    assert_eq!(a["workspace_schema_version"], 2);
     assert_eq!(a["relations"].as_array().unwrap().len(), 3, "{a:#}");
     let observed = a["relations"]
         .as_array()
@@ -140,7 +167,7 @@ fn registry_observed_alias_declared_consumers_and_determinism() {
     assert!(
         !String::from_utf8(f.run(&["inspect"]).stdout)
             .unwrap()
-            .contains(f.dir.path().to_str().unwrap())
+            .contains(f._dir.path().to_str().unwrap())
     );
     let c = f.ok(&[
         "consumers",
@@ -183,6 +210,160 @@ fn registry_observed_alias_declared_consumers_and_determinism() {
         .find(|r| r["id"] == "nongit")
         .unwrap();
     assert_eq!(ng["git_known"], false);
+}
+
+#[test]
+fn relation_ids_include_contract_kind_and_survive_reorder_and_relocation() {
+    let mut f = Fixture::new();
+    let relation_id = |value: &Value| {
+        value["relations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["contract_id"] == "api")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let api_id = relation_id(&f.ok(&["inspect"]));
+
+    f.value["contracts"][0]["kind"] = json!("event_schema");
+    f.save();
+    let event_id = relation_id(&f.ok(&["inspect"]));
+    assert_ne!(api_id, event_id);
+
+    f.value["repositories"].as_array_mut().unwrap().reverse();
+    f.save();
+    assert_eq!(event_id, relation_id(&f.ok(&["inspect"])));
+
+    f.relocate();
+    assert_eq!(event_id, relation_id(&f.ok(&["inspect"])));
+}
+
+#[test]
+fn impact_retains_direct_contract_triggers_and_human_relationship_provenance() {
+    let mut f = Fixture::new();
+    f.value["contracts"][0]["consumers"] = json!([
+        {"repo":"consumer","path":"src/api.rs"}
+    ]);
+    f.value["contracts"].as_array_mut().unwrap().push(json!({
+        "id":"events",
+        "kind":"event_schema",
+        "provider":{"repo":"provider","path":"schemas/events.proto"},
+        "consumers":[{"repo":"consumer","path":"src/events.rs"}]
+    }));
+    write(
+        &f.root("provider"),
+        "schemas/events.proto",
+        "syntax = 'proto3';\n",
+    );
+    write(
+        &f.root("consumer"),
+        "src/api.rs",
+        "// API declaration endpoint\n",
+    );
+    write(
+        &f.root("consumer"),
+        "src/events.rs",
+        "// Event declaration endpoint\n",
+    );
+    commit(&f.root("provider"));
+    commit(&f.root("consumer"));
+    f.save();
+
+    let provider = f.root("provider");
+    let base = git(&provider, &["rev-parse", "HEAD"]);
+    write(&provider, "schemas/api.yaml", "api: v2\n");
+    write(
+        &provider,
+        "schemas/events.proto",
+        "syntax = 'proto3';\nmessage E {}\n",
+    );
+    write(
+        &provider,
+        "schemas/generated.proto",
+        "message Generated {}\n",
+    );
+    write(&provider, "src/lib.rs", "pub fn changed() {}\n");
+    let head = commit(&provider);
+    let range = format!("{base}..{head}");
+    let response = f.ok(&["impact", "--repo", "provider", "--change", &range]);
+    let impact = &response["impact"];
+    let candidates = impact["candidates"].as_array().unwrap();
+    assert_eq!(candidates.len(), 1);
+    let candidate = &candidates[0];
+    assert_eq!(candidate["repo"], "consumer");
+    assert_eq!(candidate["reason"], "declared_contract_candidate");
+    assert_eq!(candidate["direct_triggers"].as_array().unwrap().len(), 3);
+    assert_eq!(candidate["direct_triggers_omitted"], 0);
+    let direct = candidate["direct_triggers"].as_array().unwrap();
+    assert_eq!(direct[0]["reason"], "declared_contract_candidate");
+    assert_eq!(direct[1]["reason"], "declared_contract_candidate");
+    assert_eq!(direct[2]["reason"], "coarse_package_candidate");
+    let direct_ids = direct
+        .iter()
+        .map(|t| t["relation_id"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    let relations = response["relations"].as_array().unwrap();
+    for contract_id in ["api", "events"] {
+        let relation = relations
+            .iter()
+            .find(|r| r["contract_id"] == contract_id)
+            .unwrap();
+        assert!(direct_ids.contains(relation["id"].as_str().unwrap()));
+    }
+    assert!(
+        candidate["trigger_paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| { p == "schemas/api.yaml" })
+    );
+    assert!(
+        candidate["trigger_paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| { p == "schemas/events.proto" })
+    );
+    assert!(
+        impact["trigger_omissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|o| {
+                o["path"] == "schemas/generated.proto" && o["reason"] == "role_not_package_trigger"
+            })
+    );
+
+    let human = String::from_utf8(
+        f.run_format(&["consumers", "--repo", "provider"], "human")
+            .stdout,
+    )
+    .unwrap();
+    assert!(human.contains("consumer_path=src/api.rs"));
+    assert!(human.contains("contract_kind=api_schema"));
+    assert!(human.contains("contract_id=api"));
+    assert!(human.contains("consumer_path=Cargo.toml"));
+    assert!(human.contains("source=consumer/Cargo.toml"));
+    assert!(human.contains("source_fingerprint="));
+    assert!(human.contains("provider_fingerprint="));
+
+    // Manifest ordering affects its byte fingerprint, not relationship identity
+    // or the sorted direct-trigger evidence.
+    f.value["repositories"].as_array_mut().unwrap().reverse();
+    f.value["contracts"].as_array_mut().unwrap().reverse();
+    f.save();
+    let reordered = f.ok(&["impact", "--repo", "provider", "--change", &range]);
+    assert_eq!(
+        candidate["direct_triggers"],
+        reordered["impact"]["candidates"][0]["direct_triggers"]
+    );
+    assert_eq!(
+        candidate["trigger_paths"],
+        reordered["impact"]["candidates"][0]["trigger_paths"]
+    );
 }
 #[test]
 fn committed_schema_rename_delete_dirty_consumer_and_unrelated_changes() {
@@ -269,6 +450,131 @@ fn committed_schema_rename_delete_dirty_consumer_and_unrelated_changes() {
     assert_eq!(a["impact"]["candidates"], json!([]));
     f.fail(&["impact", "--repo", "nongit", "--change", "HEAD~1..HEAD"]);
     f.fail(&["impact", "--repo", "provider", "--change", "missing..HEAD"]);
+}
+
+#[test]
+fn unmodeled_changes_are_reported_and_supported_triggers_still_match() {
+    let mut f = Fixture::new();
+    let provider = f.root("provider");
+    let base = git(&provider, &["rev-parse", "HEAD"]);
+    write(
+        &provider,
+        "schemas/generated.proto",
+        "message Generated {}\n",
+    );
+    let head = commit(&provider);
+    let result = f.ok(&[
+        "impact",
+        "--repo",
+        "provider",
+        "--change",
+        &format!("{base}..{head}"),
+    ]);
+    assert_eq!(result["impact"]["candidates"], json!([]));
+    assert!(
+        result["impact"]["trigger_omissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|o| o["path"] == "schemas/generated.proto"
+                && o["reason"] == "role_not_package_trigger")
+    );
+
+    let base = head;
+    write(&provider, "src/lib.rs", "pub fn rust_change() {}\n");
+    let head = commit(&provider);
+    let rust_change = f.ok(&[
+        "impact",
+        "--repo",
+        "provider",
+        "--change",
+        &format!("{base}..{head}"),
+    ]);
+    assert_eq!(
+        rust_change["impact"]["candidates"][0]["reason"],
+        "coarse_package_candidate"
+    );
+
+    let base = head;
+    write(&provider, "build.rs", "fn main() {}\n");
+    let head = commit(&provider);
+    let build_change = f.ok(&[
+        "impact",
+        "--repo",
+        "provider",
+        "--change",
+        &format!("{base}..{head}"),
+    ]);
+    assert_eq!(
+        build_change["impact"]["candidates"][0]["reason"],
+        "coarse_package_candidate"
+    );
+
+    // A declared .proto endpoint can still produce exact evidence even though
+    // the same file class is outside coarse package-trigger coverage.
+    f.value["contracts"].as_array_mut().unwrap().push(json!({
+        "id":"generated-api",
+        "kind":"api_schema",
+        "provider":{"repo":"provider","path":"schemas/events.proto"},
+        "consumers":[{"repo":"client","path":"src/events.py"}]
+    }));
+    write(&provider, "schemas/events.proto", "message Event {}\n");
+    write(
+        &f.root("client"),
+        "src/events.py",
+        "# generated contract consumer\n",
+    );
+    commit(&provider);
+    commit(&f.root("client"));
+    f.save();
+    let base = git(&provider, &["rev-parse", "HEAD"]);
+    write(
+        &provider,
+        "schemas/events.proto",
+        "message Event { string id = 1; }\n",
+    );
+    let head = commit(&provider);
+    let declared = f.ok(&[
+        "impact",
+        "--repo",
+        "provider",
+        "--change",
+        &format!("{base}..{head}"),
+    ]);
+    assert_eq!(declared["impact"]["candidates"][0]["repo"], "client");
+    assert_eq!(
+        declared["impact"]["candidates"][0]["reason"],
+        "declared_contract_candidate"
+    );
+    assert!(
+        declared["impact"]["trigger_omissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|o| o["path"] == "schemas/events.proto"
+                && o["reason"] == "role_not_package_trigger")
+    );
+
+    #[cfg(unix)]
+    {
+        let base = head;
+        std::os::unix::fs::symlink("api.yaml", provider.join("schemas/link.proto")).unwrap();
+        let head = commit(&provider);
+        let non_regular = f.ok(&[
+            "impact",
+            "--repo",
+            "provider",
+            "--change",
+            &format!("{base}..{head}"),
+        ]);
+        assert!(
+            non_regular["impact"]["trigger_omissions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|o| o["path"] == "schemas/link.proto" && o["reason"] == "non_regular")
+        );
+    }
 }
 #[test]
 fn package_transitivity_cycles_depth_and_witnesses() {
@@ -438,7 +744,7 @@ fn symlink_files_parent_escapes_and_root_alias_policy() {
         f.save();
         f.fail(&["inspect"]);
     }
-    symlink(f.root("provider"), f.dir.path().join("alias-root")).unwrap();
+    symlink(f.root("provider"), f._dir.path().join("alias-root")).unwrap();
     f.value = original.clone();
     f.value["repositories"][0]["root"] = json!("alias-root");
     f.save();
@@ -526,12 +832,12 @@ fn workspace_resource_ceilings_and_nested_git_scope() {
 }
 
 #[test]
-fn unsupported_workspaces_oversize_cargo_and_json_schema_shape() {
+fn virtual_workspaces_oversize_cargo_and_json_schema_shape() {
     let f = Fixture::new();
     write(
         &f.root("provider"),
         "Cargo.toml",
-        "[workspace]\nmembers=['nested']\n[package]\nname='provider'\nversion='0.1.0'\n",
+        "[workspace]\nmembers=['nested']\n",
     );
     let a = f.ok(&["inspect"]);
     assert!(
@@ -539,7 +845,7 @@ fn unsupported_workspaces_oversize_cargo_and_json_schema_shape() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|g| g["reason"] == "cargo_workspace_unsupported")
+            .any(|g| g["reason"] == "cargo_virtual_workspace_unsupported")
     );
     assert!(
         !a["relations"]
@@ -582,6 +888,47 @@ fn unsupported_workspaces_oversize_cargo_and_json_schema_shape() {
             "workspace_id",
             "workspace_schema_version"
         ]
+    );
+}
+
+#[test]
+fn explicit_root_package_with_workspace_is_observed_and_members_are_omitted() {
+    let f = Fixture::new();
+    write(
+        &f.root("consumer"),
+        "Cargo.toml",
+        "[workspace]\nmembers=[]\n[package]\nname='consumer'\nversion='0.1.0'\n[dependencies]\nprovider={path='../provider'}\n",
+    );
+    let a = f.ok(&["inspect"]);
+    assert!(a["relations"].as_array().unwrap().iter().any(|r| {
+        r["provider"] == "provider"
+            && r["consumer"] == "consumer"
+            && r["basis"] == "observed_manifest_dependency"
+    }));
+    assert!(a["coverage"].as_array().unwrap().iter().any(|g| {
+        g["repo"] == "consumer" && g["reason"] == "cargo_workspace_members_not_discovered"
+    }));
+
+    write(
+        &f.root("consumer"),
+        "Cargo.toml",
+        "[package]\nname='consumer'\nversion='0.1.0'\n[dependencies]\nprovider={workspace=true}\n",
+    );
+    let a = f.ok(&["inspect"]);
+    assert!(a["coverage"].as_array().unwrap().iter().any(|g| {
+        g["repo"] == "consumer" && g["reason"] == "cargo_dependency_shape_unsupported"
+    }));
+
+    write(
+        &f.root("consumer"),
+        "Cargo.toml",
+        "[workspace]\nmembers=[]\n[package]\nworkspace='..'\nversion.workspace=true\n",
+    );
+    let a = f.ok(&["inspect"]);
+    assert!(
+        a["coverage"].as_array().unwrap().iter().any(|g| {
+            g["repo"] == "consumer" && g["reason"] == "cargo_package_identity_inherited"
+        })
     );
 }
 

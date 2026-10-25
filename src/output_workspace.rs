@@ -44,7 +44,7 @@ pub fn document<'a>(
         crate::workspace::selector(path)?;
     }
     Ok(Document {
-        workspace_schema_version: 1,
+        workspace_schema_version: 2,
         manifest_schema_version: 1,
         command,
         workspace_id: &w.id,
@@ -55,7 +55,7 @@ pub fn document<'a>(
             "current_working_tree_best_effort"
         },
         conclusion: "candidate_consumers_only_no_proven_breakage_or_completeness",
-        sort_order: "repositories_by_id_relations_by_provider_consumer_kind_paths_breadth_first_first_witness",
+        sort_order: "repositories_by_id_relations_by_provider_consumer_kind_paths_breadth_first_representative_witness_direct_triggers_by_contract_priority_and_relation_id",
         repositories: w
             .repositories
             .iter()
@@ -112,14 +112,39 @@ pub fn human(d: &Document<'_>) -> Result<String> {
                 "declared mapping; runtime use unproven"
             }
         };
+        let kind = match e.kind {
+            crate::workspace::RelationKind::CargoPathDependency => "cargo_path_dependency",
+            crate::workspace::RelationKind::DeclaredContractConsumer => {
+                "declared_contract_consumer"
+            }
+        };
+        let contract_kind = match e.contract_kind.as_ref() {
+            Some(crate::workspace::ContractKind::ApiSchema) => "api_schema",
+            Some(crate::workspace::ContractKind::EventSchema) => "event_schema",
+            None => "<none>",
+        };
+        let source_repo = e.source_repo.as_deref().unwrap_or("<workspace>");
+        let provider_fingerprint = e
+            .provider_package_fingerprint
+            .as_deref()
+            .unwrap_or("<none>");
         writeln!(
             out,
-            "edge {i}: {} -> {} [{}] path={} locator={} validation={}",
+            "edge {i}: id={} {} -> {} kind={} [{}] provider_path={} consumer_path={} contract_kind={} contract_id={} locator={} source={}/{} source_fingerprint={} provider_fingerprint={} validation={}",
+            esc(&e.id),
             esc(&e.provider),
             esc(&e.consumer),
+            kind,
             basis,
             esc(e.provider_path.as_deref().unwrap_or("<package>")),
+            esc(&e.consumer_path),
+            contract_kind,
+            esc(e.contract_id.as_deref().unwrap_or("<none>")),
             esc(&e.locator),
+            esc(source_repo),
+            esc(&e.source_file),
+            esc(&e.source_fingerprint),
+            esc(provider_fingerprint),
             e.validation
         )?;
     }
@@ -128,12 +153,30 @@ pub fn human(d: &Document<'_>) -> Result<String> {
         for c in &i.candidates {
             writeln!(
                 out,
-                "candidate {}: {} distance={} witness={:?} triggers={:?}",
+                "candidate {}: {} distance={} witness={:?} direct_triggers={:?} direct_triggers_omitted={} trigger_paths={:?}",
                 esc(&c.repo),
                 c.reason,
                 c.distance,
                 c.witness_edges,
-                c.trigger_paths
+                c.direct_triggers
+                    .iter()
+                    .map(|t| format!("{}@{}", t.reason, t.relation_id))
+                    .collect::<Vec<_>>(),
+                c.direct_triggers_omitted,
+                c.trigger_paths.iter().map(|p| esc(p)).collect::<Vec<_>>()
+            )?;
+        }
+        for omission in &i.trigger_omissions {
+            writeln!(
+                out,
+                "trigger coverage {} side={}: {}",
+                omission
+                    .path
+                    .as_deref()
+                    .map(esc)
+                    .unwrap_or_else(|| "<non-utf8-path>".into()),
+                omission.side,
+                omission.reason
             )?;
         }
         writeln!(
@@ -180,6 +223,7 @@ mod tests {
             head: String::new(),
             depth: 1,
             changed_paths: vec![],
+            trigger_omissions: vec![],
             non_utf8_paths_omitted: 0,
             candidates: vec![],
             traversal_truncated: false,
@@ -195,7 +239,10 @@ mod tests {
                 distance: 1,
                 reason: "coarse_package_candidate",
                 witness_edges: vec![0],
+                direct_triggers: vec![],
+                direct_triggers_omitted: 0,
                 trigger_paths: vec!["x".repeat(1024); 4096],
+                seen_direct_trigger_ids: std::collections::BTreeSet::new(),
             });
         }
         let d = document(&w, "impact", None, None, Some(&impact)).unwrap();

@@ -982,7 +982,7 @@ inspect/consumers/impact use cases without transport types. `workspace_impact.rs
 composes the existing `git::revision::Revisions` raw committed file changes with
 these relationships; it does not build a second scanner, index or Git pipeline.
 `output_workspace.rs` is a pure bounded builder/renderer for separately versioned
-workspace JSON v1 and escaped human output. CLI owns manifest selection and printing.
+workspace JSON v2 and escaped human output. CLI owns manifest selection and printing.
 HTTP/MCP request vocabularies remain single-root and unchanged.
 
 Canonical roots authorize access, while logical repo IDs survive physical moves.
@@ -995,25 +995,37 @@ selectors; native committed paths without textual representation are counted as
 omissions. No root path or source body appears in workspace evidence.
 
 Observed evidence requires exact registered path and root-package name equality;
-consumer and provider Cargo bytes have fingerprints. Declared evidence identifies
-manifest bytes and contract ID and only validates exact file availability. Neither
-proves runtime use, feature activation or compatibility. Unsupported/missing Cargo
-and unavailable endpoints are typed coverage gaps, not guessed edges. Deleted or
-renamed declared provider paths can use a regular committed diff side, with current
-consumer availability and explicit validation basis. Other relationships remain
-current working-tree observations. Optional Git metadata records HEAD/dirty/unknown
-without claiming atomicity or binding current manifests to those commits.
+consumer and provider Cargo bytes have fingerprints. An explicit root package may
+also declare `[workspace]`; only that root package is inspected, and member
+discovery is a coverage gap. Virtual workspace roots, inherited package identity,
+and `workspace = true` dependencies remain unsupported. Declared evidence
+identifies manifest bytes and contract ID and only validates exact file availability.
+Neither proves runtime use, feature activation or compatibility. Unsupported/missing
+Cargo and unavailable endpoints are typed coverage gaps, not guessed edges. Deleted
+or renamed declared provider paths can use a regular committed diff side, with
+current consumer availability and explicit validation basis. Other relationships
+remain current working-tree observations. Optional Git metadata records
+HEAD/dirty/unknown without claiming atomicity or binding current manifests to those
+commits.
 
 Only source-role changes, Cargo.toml and build.rs trigger coarse package candidates;
-contracts require exact provider path changes. Breadth-first first-witness traversal
-follows package edges after its first hop, deduplicates repositories, stops at depth
-1–3 and exposes alternate/depth/resource omissions. Structural relation IDs exclude
-physical roots and byte fingerprints; witness edge indices are response-local.
+contracts require exact provider path changes. Each changed side excluded from
+coarse package triggering is reported with a typed reason; exact contract matching
+can still apply to the same path. Breadth-first traversal follows package edges
+after its first hop and deduplicates repositories. It retains up to 64 direct
+trigger relation IDs per candidate, prioritizes exact declared evidence in the
+summary reason, and keeps one shortest deterministic representative chain. Excess
+direct triggers, alternate transitive witnesses, depth limits and resource
+truncation are explicit. Relation IDs hash the logical provider/consumer IDs,
+relation and contract kinds, selectors, contract ID and locator; physical roots and
+byte fingerprints are excluded. Witness edge indices are response-local.
 Candidates never assert breakage, authority or policy.
 
 All state is invocation-local. Manifest, repo/contract/consumer counts, endpoint
 checks, Cargo reads/dependency checks, retained edges, coverage, Git change/path
 bytes, traversal and escaped output have explicit bounds documented in README.
-No new persistence or scanner/parser/relation semantics are introduced;
-`INDEX_COMPAT_VERSION` 1, `SCHEMA_VERSION` 3 and freshness-v2 remain appropriate.
+Workspace JSON v2 versions the direct-trigger, omission and relation-ID contract;
+the manifest remains v1. No new persistence or scanner/parser/index relation
+semantics are introduced; `INDEX_COMPAT_VERSION` 1, `SCHEMA_VERSION` 3 and
+freshness-v2 remain appropriate.
 No daemon worker, implicit neighbor enrollment, source execution or network is added.

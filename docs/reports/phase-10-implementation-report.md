@@ -3,6 +3,10 @@
 Date: 2026-10-21. Local implementation evidence; **independent review and maintainer
 acceptance remain pending**. Phase 9 and earlier pending dispositions are unchanged.
 
+The workspace JSON v1 and first-witness behavior recorded below describe this
+implementation baseline. The CE10-01–CE10-05 follow-up changes the current workspace
+contract to JSON v2; see the [Phase 10 review-fix report](phase-10-review-fix-report.md).
+
 ## Baseline and commit ownership
 
 Baseline HEAD was `39c87cfa4dd4e51b7ef8780e7ed96072fe5aa59d`, matching the supplied
@@ -85,10 +89,13 @@ not supply an exact contract trigger.
 Package candidates require regular source-role changes under the existing
 classifier, or Cargo.toml/build.rs. Other changes alone do not trigger them.
 Traversal after the first hop follows package links only, not unrelated contracts.
-Candidates deduplicate by logical repo, with shortest first witness and stable
-provider/consumer/kind/path/contract/locator tie order. Alternate witness and depth
-omission counts remain visible; depth is 1–3. Relation IDs hash structural logical
-keys, while witness array indices are response-local. No candidate proves breakage.
+In this implementation baseline, candidates deduplicate by logical repo, with
+shortest first witness and stable provider/consumer/kind/path/contract/locator tie
+order. Alternate witness and depth omission counts remain visible; depth is 1–3.
+Relation IDs hash structural logical keys, while witness array indices are
+response-local. No candidate proves breakage. The review-fix report replaces the
+single-trigger summary with bounded direct-trigger evidence and includes semantic
+contract kind in relation identity.
 
 JSON is separately versioned `workspace_schema_version: 1`. It exposes manifest
 version/fingerprint, command/selectors, sorted nodes/edges/coverage, current

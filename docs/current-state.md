@@ -1,6 +1,6 @@
 # Current state
 
-**Last updated:** 2026-10-21
+**Last updated:** 2026-10-24
 
 **Active phase:** Phase 10 — Cross-Repository Intelligence
 
@@ -12,13 +12,16 @@
   root containment, stable logical repo identities, observed static Cargo root
   path/package relationships and declared API/event file mappings. CLI `workspace
   inspect`, `workspace consumers` and `workspace impact` use transport-neutral
-  application functions and separate bounded workspace JSON v1/human rendering.
+  application functions and separate bounded workspace JSON v2/human rendering.
 - Committed Git diff sides trigger exact declared contract candidates, including
   delete/rename paths, and coarse source/package candidates. Deterministic bounded
-  package-only downstream traversal exposes witnesses, alternate/depth omissions
-  and current consumer HEAD/dirty/unknown mixed-time evidence. Unsupported sources
-  and unavailable endpoints are explicit coverage gaps. HTTP/MCP/cache contracts
-  remain unchanged. See the [Phase 10 report](reports/phase-10-implementation-report.md).
+  package-only downstream traversal retains bounded direct relation IDs, prefers
+  exact declared evidence in the summary reason, and exposes typed change-trigger
+  omissions, representative witnesses, alternate/depth omissions and current
+  consumer HEAD/dirty/unknown mixed-time evidence. Self-contained root Cargo
+  packages with `[workspace]` are observed; virtual/member/inherited cases remain
+  explicit gaps. HTTP/MCP/cache contracts remain unchanged. See the [Phase 10
+  report](reports/phase-10-implementation-report.md) and [review-fix report](reports/phase-10-review-fix-report.md).
 
 - Phase 9 adds a synchronous application seam for search, exact symbol lookup,
   neighborhood, committed impact and full-file task context. CLI, HTTP and MCP
@@ -179,6 +182,14 @@ Evidence: [Phase 5 review-fix report](reports/phase-5-review-fix-report.md),
   Phase 10 review and maintainer acceptance remain pending; prior dispositions
   are unchanged.
 
+- On 2026-10-24 the maintainer requested one commit addressing the attached
+  independent Phase 10 findings CE10-01 through CE10-05. The follow-up versions
+  workspace JSON as v2, retains bounded direct triggers, adds typed trigger
+  omissions, fixes semantic relation identity, accepts explicit root packages
+  alongside `[workspace]`, and expands human relationship provenance. Verification
+  and commit evidence are in the [Phase 10 review-fix report](reports/phase-10-review-fix-report.md).
+  Fresh independent re-review and maintainer acceptance remain pending.
+
 - The maintainer directly authorized Phase 9 from `6693892`, despite pending Phase 8
   and earlier reviews, and requested one commit. This authorizes implementation,
   not acceptance. Canonical verification passed locally: formatting, Clippy,
@@ -291,14 +302,16 @@ Evidence: [Phase 5 review-fix report](reports/phase-5-review-fix-report.md),
 ## Known limitations
 
 Phase 10 is a trusted local CLI registry, not a multi-root service or atomic
-snapshot. Root Cargo packages only; no workspace/member discovery, feature/version
-resolution, runtime API inference, custom Cargo build-input modeling or source
-bundles. Package triggers use the existing source-role classifier plus Cargo.toml
-and build.rs. Declared file availability does not prove use; current relationships
-and committed provider changes have mixed time bases. Depth is at most three;
-only one witness per repo is retained. Text selectors cannot target non-UTF-8
-names, and omissions are counted. Hard bounds can reject a command. No new
-persistence, HTTP/MCP operation or Phase 11 integration exists.
+snapshot. Only explicit root Cargo packages are inspected; virtual workspaces and
+member discovery, inherited identities, feature/version resolution, runtime API
+inference, custom Cargo build-input modeling or source bundles remain unsupported.
+Package triggers use the existing source-role classifier plus Cargo.toml and
+build.rs. Declared file availability does not prove use; current relationships and
+committed provider changes have mixed time bases. Depth is at most three; each
+candidate retains one representative chain and up to 64 direct relation triggers,
+with excess counts surfaced. Text selectors cannot target non-UTF-8 names, and
+omissions are counted. Hard bounds can reject a command. No new persistence,
+HTTP/MCP operation or Phase 11 integration exists.
 
 Phase 9 is local, single-root and serialized. Adapter context budgets stop at 1 MiB
 of full-file content; response limits can reject larger evidence sets. HTTP timeouts
@@ -368,10 +381,10 @@ filesystem TOCTOU races remain; results are not atomic snapshots.
 
 ## Next step
 
-Fresh independent Phase 10 review of registry/path identity, observed/declared
-precision, committed trigger semantics, mixed-time provenance, bounded traversal,
-output contracts and production integration. Review and maintainer acceptance
-remain pending.
+Fresh independent Phase 10 re-review of the CE10-01–CE10-05 fixes, including the
+workspace JSON v2 evidence and identity contract, committed trigger omissions,
+mixed-time provenance, bounded traversal and production integration. Maintainer
+acceptance remains pending.
 
 Fresh independent Phase 9 re-review of MCP interoperability, HTTP local security,
 blocking/response ownership, cache races, disclosure boundaries and evidence parity.
