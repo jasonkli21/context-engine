@@ -180,6 +180,7 @@ fn committed_changes_rename_delete_modes_and_dirty_checkout() {
     r.write("mode.py", b"def mode():\n    pass\n");
     let base = r.commit();
     r.git(&["mv", "old.py", "renamed.py"]);
+    r.write("renamed.py", b"def target():\n    return 2\n");
     fs::remove_file(r.root.join("deleted.rs")).unwrap();
     r.git(&["update-index", "--chmod=+x", "mode.py"]);
     // Preserve executable mode through git add on platforms supporting it.
@@ -207,6 +208,92 @@ fn committed_changes_rename_delete_modes_and_dirty_checkout() {
             .any(|f| f["before"]["path"] == "deleted.rs" && f["after"].is_null())
     );
     assert!(files.iter().any(|f| f["after"]["mode"] == "100755"));
+    let delta_kinds = files
+        .iter()
+        .flat_map(|f| f["symbols"].as_array().unwrap())
+        .map(|s| s["kind"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(delta_kinds.contains("added"));
+    assert!(delta_kinds.contains("removed"));
+    assert!(delta_kinds.contains("modified"));
+
+    let modified_file_index = files
+        .iter()
+        .position(|f| {
+            f["symbols"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["kind"] == "modified")
+        })
+        .expect("rename fixture should retain a modified symbol pair");
+    let modified_delta_index = files[modified_file_index]["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|s| s["kind"] == "modified")
+        .unwrap();
+    let modified = &files[modified_file_index];
+    let before_path = modified["before"]["path"].as_str().unwrap();
+    let base_other_symbol = d["data"]["base"]["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["path"] != before_path)
+        .expect("fixture has a second changed file with a symbol");
+    let base_file = d["data"]["base"]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["path"] == before_path)
+        .unwrap();
+
+    // Mutate a real immutable-Git rename response. Each document keeps the
+    // producer output otherwise intact so the rejection isolates one invariant.
+    let mut wrong_file_type = d.clone();
+    wrong_file_type["data"]["files"][modified_file_index]["symbols"][modified_delta_index]["before_ref"] =
+        base_file["id"].clone();
+    assert!(!valid(&serde_json::to_vec(&wrong_file_type).unwrap()));
+
+    let mut wrong_repo_type = d.clone();
+    wrong_repo_type["data"]["files"][modified_file_index]["symbols"][modified_delta_index]["after_ref"] =
+        d["data"]["head"]["repository_ref"].clone();
+    assert!(!valid(&serde_json::to_vec(&wrong_repo_type).unwrap()));
+
+    let mut wrong_side_path = d.clone();
+    wrong_side_path["data"]["files"][modified_file_index]["before"]["path"] = json!("unrelated.py");
+    assert!(!valid(&serde_json::to_vec(&wrong_side_path).unwrap()));
+
+    let mut wrong_same_revision_file = d.clone();
+    wrong_same_revision_file["data"]["files"][modified_file_index]["symbols"]
+        [modified_delta_index]["before_ref"] = base_other_symbol["id"].clone();
+    assert!(!valid(
+        &serde_json::to_vec(&wrong_same_revision_file).unwrap()
+    ));
+
+    let mut wrong_revision = d.clone();
+    wrong_revision["data"]["files"][modified_file_index]["symbols"][modified_delta_index]["before_ref"] =
+        d["data"]["files"][modified_file_index]["symbols"][modified_delta_index]["after_ref"]
+            .clone();
+    assert!(!valid(&serde_json::to_vec(&wrong_revision).unwrap()));
+
+    let mut invalid_added_shape = d.clone();
+    invalid_added_shape["data"]["files"][modified_file_index]["symbols"][modified_delta_index]["kind"] =
+        json!("added");
+    assert!(!valid(&serde_json::to_vec(&invalid_added_shape).unwrap()));
+
+    let mut dirty_change_observation = d.clone();
+    dirty_change_observation["observation"]["git_head"] = json!(head);
+    dirty_change_observation["observation"]["git_dirty"] = json!(true);
+    assert!(!valid(
+        &serde_json::to_vec(&dirty_change_observation).unwrap()
+    ));
+
+    let candidate_doc = r.ok("candidates", &["--task", "target", "--limit", "20"]);
+    let mut wrong_candidate_sort = candidate_doc.clone();
+    wrong_candidate_sort["data"]["sort_order"] = json!("random");
+    assert!(!valid(&serde_json::to_vec(&wrong_candidate_sort).unwrap()));
+
     assert!(!d.to_string().contains("PRIVATE_DIRTY_SENTINEL"));
     assert_eq!(d, r.ok("changes", &[&range]));
     bad(r.run("changes", &["missing..HEAD"]));
@@ -283,6 +370,13 @@ fn independent_decoder_golden_valid_and_invalid_documents() {
         "containment-endpoint",
         "candidate-rank",
         "change-side-reference",
+        "change-file-reference",
+        "change-repository-reference",
+        "change-side-path-mismatch",
+        "change-added-with-before-reference",
+        "changes-current-dirty-observation",
+        "change-same-revision-wrong-file-symbol",
+        "candidate-sort-order",
     ] {
         assert!(
             !valid(&fs::read(p.join(format!("invalid-{name}.json"))).unwrap()),
@@ -358,7 +452,7 @@ fn independent_decoder_rejects_mutated_live_references_and_counts() {
 #[test]
 fn workspace_preserves_v2_observed_declared_and_impact_semantics() {
     let tmp = tempfile::tempdir().unwrap();
-    for name in ["provider", "consumer"] {
+    for name in ["provider", "consumer", "downstream", "alternate"] {
         let root = tmp.path().join(name);
         fs::create_dir(&root).unwrap();
         fs::write(
@@ -369,6 +463,7 @@ fn workspace_preserves_v2_observed_declared_and_impact_semantics() {
         fs::write(root.join("api.json"), "{}").unwrap();
     }
     fs::write(tmp.path().join("consumer/Cargo.toml"), "[package]\nname='consumer'\nversion='0.1.0'\n[dependencies]\nprovider={path='../provider'}\n").unwrap();
+    fs::write(tmp.path().join("downstream/Cargo.toml"), "[package]\nname='downstream'\nversion='0.1.0'\n[dependencies]\nconsumer={path='../consumer'}\n").unwrap();
     let provider = tmp.path().join("provider");
     let git = |args: &[&str]| {
         let o = Command::new("git")
@@ -389,7 +484,7 @@ fn workspace_preserves_v2_observed_declared_and_impact_semantics() {
     fs::write(provider.join("api.json"), "{\"changed\":true}").unwrap();
     git(&["add", "."]);
     git(&["commit", "-qm", "head"]);
-    let mut manifest = json!({"schema_version":1,"workspace_id":"sample","repositories":[{"id":"provider","root":"provider"},{"id":"consumer","root":"consumer"}],"contracts":[{"id":"api","kind":"api_schema","provider":{"repo":"provider","path":"api.json"},"consumers":[{"repo":"consumer","path":"api.json"}]}]});
+    let mut manifest = json!({"schema_version":1,"workspace_id":"sample","repositories":[{"id":"provider","root":"provider"},{"id":"consumer","root":"consumer"},{"id":"downstream","root":"downstream"},{"id":"alternate","root":"alternate"}],"contracts":[{"id":"api","kind":"api_schema","provider":{"repo":"provider","path":"api.json"},"consumers":[{"repo":"consumer","path":"api.json"}]},{"id":"alternate-api","kind":"api_schema","provider":{"repo":"alternate","path":"api.json"},"consumers":[{"repo":"consumer","path":"api.json"}]}]});
     let file = tmp.path().join("workspace.json");
     fs::write(&file, manifest.to_string()).unwrap();
     let run = |extra: &[&str]| {
@@ -404,7 +499,7 @@ fn workspace_preserves_v2_observed_declared_and_impact_semantics() {
         serde_json::from_slice::<Value>(&o.stdout).unwrap()
     };
     let d = run(&[]);
-    assert_eq!(d["data"]["relations"].as_array().unwrap().len(), 2);
+    assert_eq!(d["data"]["relations"].as_array().unwrap().len(), 4);
     manifest["repositories"].as_array_mut().unwrap().reverse();
     fs::write(&file, manifest.to_string()).unwrap();
     let reordered = run(&[]);
@@ -417,21 +512,78 @@ fn workspace_preserves_v2_observed_declared_and_impact_semantics() {
             .collect::<Vec<_>>()
     };
     assert_eq!(ids(&d), ids(&reordered));
-    let impact = run(&["--repo", "provider", "--change", &format!("{base}..HEAD")]);
+    let impact = run(&[
+        "--repo",
+        "provider",
+        "--change",
+        &format!("{base}..HEAD"),
+        "--depth",
+        "3",
+    ]);
     assert_eq!(
-        impact["data"]["impact"]["candidates"][0]["reason"],
+        impact["data"]["impact"]["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["repo"] == "consumer")
+            .unwrap()["reason"],
         "declared_contract_candidate"
     );
+    let candidates = impact["data"]["impact"]["candidates"].as_array().unwrap();
+    let consumer_index = candidates
+        .iter()
+        .position(|c| c["repo"] == "consumer")
+        .unwrap();
+    let downstream_index = candidates
+        .iter()
+        .position(|c| c["repo"] == "downstream")
+        .unwrap();
     assert_eq!(
-        impact["data"]["impact"]["candidates"][0]["direct_triggers"]
+        candidates[consumer_index]["direct_triggers"]
             .as_array()
             .unwrap()
             .len(),
         1
     );
     let mut wrong_trigger_owner = impact.clone();
-    wrong_trigger_owner["data"]["impact"]["candidates"][0]["repo"] = json!("provider");
+    wrong_trigger_owner["data"]["impact"]["candidates"][consumer_index]["repo"] = json!("provider");
     assert!(!valid(&serde_json::to_vec(&wrong_trigger_owner).unwrap()));
+
+    let relations = impact["data"]["relations"].as_array().unwrap();
+    let edge_index = |provider: &str, consumer: &str| {
+        relations
+            .iter()
+            .position(|r| r["provider"] == provider && r["consumer"] == consumer)
+            .unwrap()
+    };
+    let provider_consumer = edge_index("provider", "consumer");
+    let alternate_consumer = edge_index("alternate", "consumer");
+
+    let mut broken_chain = impact.clone();
+    broken_chain["data"]["impact"]["candidates"][downstream_index]["witness_edges"] =
+        json!([provider_consumer, alternate_consumer]);
+    assert!(!valid(&serde_json::to_vec(&broken_chain).unwrap()));
+
+    let mut missing_witness = impact.clone();
+    missing_witness["data"]["impact"]["candidates"][downstream_index]["witness_edges"] = json!([]);
+    missing_witness["data"]["impact"]["candidates"][downstream_index]["distance"] = json!(0);
+    assert!(!valid(&serde_json::to_vec(&missing_witness).unwrap()));
+
+    let mut wrong_final_consumer = impact.clone();
+    wrong_final_consumer["data"]["impact"]["candidates"][downstream_index]["repo"] =
+        json!("consumer");
+    assert!(!valid(&serde_json::to_vec(&wrong_final_consumer).unwrap()));
+
+    let mut wrong_trigger_provider = impact.clone();
+    wrong_trigger_provider["data"]["impact"]["candidates"][consumer_index]["direct_triggers"][0]
+        ["relation_id"] = relations[alternate_consumer]["id"].clone();
+    assert!(!valid(
+        &serde_json::to_vec(&wrong_trigger_provider).unwrap()
+    ));
+
+    let mut wrong_impact_revision = impact.clone();
+    wrong_impact_revision["observation"]["head"] = base.clone().into();
+    assert!(!valid(&serde_json::to_vec(&wrong_impact_revision).unwrap()));
     // Physical relocation keeps structural workspace relationships, not manifest bytes.
     let moved = tmp.path().with_extension("relocated");
     fs::rename(tmp.path(), &moved).unwrap();

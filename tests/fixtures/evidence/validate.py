@@ -85,6 +85,7 @@ RELSTATUS = {'analyzed', 'extraction_failed', 'analysis_limit_exceeded'}
 KINDS = {'module', 'class', 'struct', 'enum', 'union', 'trait', 'function', 'method', 'type_alias', 'constant', 'static'}
 DERIVATION = {'repository_contains_file', 'lexical_range_containment', 'rust_use_syntax', 'python_import_syntax', 'rust_call_syntax', 'python_call_syntax'}
 RESOLUTION = {'direct_structural', 'exact_same_file_qualified_name', 'unresolved'}
+RANK_SORT_ORDER = 'total_desc,symbol_desc,path_desc,change_desc,graph_desc,centrality_desc,native_path_asc'
 
 
 def file(f):
@@ -171,7 +172,22 @@ def structure(d, coverage):
     for status in STATUS:
         assert counts.get('analysis_' + status, 0) >= sum(f['analysis_status'] == status for f in d['files'])
     assert counts.get('syntax_errors', 0) >= sum(f['syntax_errors'] for f in d['files'])
-    return entity_ids
+    return {
+        'ids': entity_ids,
+        'types': {entity_id: entity[0] for entity_id, entity in entities.items()},
+        'symbols': {s['id']: s['path'] for s in d['symbols']},
+    }
+
+
+def change_symbol_path(index, ref_id, side, scope_prefix):
+    if ref_id is None:
+        return
+    assert side is not None
+    assert index['types'].get(ref_id) == 'symbol'
+    assert ref_id in index['symbols']
+    symbol_path = index['symbols'][ref_id]
+    expected_path = f'{scope_prefix}/{symbol_path}' if scope_prefix else symbol_path
+    assert side['path'] == expected_path
 
 
 def validate(raw):
@@ -195,22 +211,33 @@ def validate(raw):
         structure(data, c)
     elif feed == 'changes':
         assert o['basis'] == 'committed_changed_pairs' and o['base'] and o['head']
-        base = structure(data['base'], data['base_coverage']); head = structure(data['head'], data['head_coverage'])
+        assert o['git_head'] is None and o['git_dirty'] is None
+        base = structure(data['base'], data['base_coverage'])
+        head = structure(data['head'], data['head_coverage'])
         if o['base'] != o['head']:
-            assert not base.intersection(head)
+            assert not base['ids'].intersection(head['ids'])
+        prefix = data['scope_prefix']
+        if prefix is not None:
+            safe(prefix)
         assert c['counts']['changed_files'] == len(data['files'])
         for f in data['files']:
+            assert f['before'] is not None or f['after'] is not None
             for side in ['before', 'after']:
                 if f[side] is not None:
                     safe(f[side]['path'])
                     assert re.fullmatch('[a-f0-9]{40}|[a-f0-9]{64}', f[side]['object_id'])
             for s in f['symbols']:
-                assert s['before_ref'] is None or s['before_ref'] in base
-                assert s['after_ref'] is None or s['after_ref'] in head
-                if s['before_ref'] is not None:
-                    assert s['before_ref'] in base
-                if s['after_ref'] is not None:
-                    assert s['after_ref'] in head
+                before_ref = s['before_ref']
+                after_ref = s['after_ref']
+                if s['kind'] == 'added':
+                    assert before_ref is None and after_ref is not None
+                elif s['kind'] == 'removed':
+                    assert before_ref is not None and after_ref is None
+                else:
+                    assert s['kind'] == 'modified'
+                    assert before_ref is not None and after_ref is not None
+                change_symbol_path(base, before_ref, f['before'], prefix)
+                change_symbol_path(head, after_ref, f['after'], prefix)
             for r in f['relations']:
                 assert r['resolution'] in RESOLUTION and r['derivation'] in DERIVATION
                 for side in ['before', 'after']:
@@ -220,6 +247,7 @@ def validate(raw):
                         span(example)
     elif feed == 'candidates':
         assert data['ranker_version'] == 'file-ranker-v1'
+        assert data['sort_order'] == RANK_SORT_ORDER
         assert data['semantics'] == 'ranked_metadata_not_content_selection'
         ids = set(); paths = set(); ranks = []
         for x in data['candidates']:
@@ -238,6 +266,15 @@ def validate(raw):
     elif feed == 'workspace':
         assert o['basis'] == 'mixed_time_workspace'
         assert data['workspace_schema_version'] == 2 and data['manifest_schema_version'] == 1
+        assert data['command'] in {'inspect', 'impact'}
+        if data['impact'] is None:
+            assert data['command'] == 'inspect'
+            assert o['base'] is None and o['head'] is None
+        else:
+            assert data['command'] == 'impact'
+            assert o['base'] == data['impact']['base']
+            assert o['head'] == data['impact']['head']
+            assert data['selector_repo'] == data['impact']['provider']
         repos = {r['id'] for r in data['repositories']}; assert len(repos) == len(data['repositories'])
         ids = set()
         for r in data['relations']:
@@ -249,16 +286,19 @@ def validate(raw):
                 if r[key] is not None: safe(r[key])
         if data['impact']:
             relations = data['relations']
+            by_id = {r['id']: r for r in relations}
+            provider = data['impact']['provider']
             for x in data['impact']['candidates']:
                 assert x['repo'] in repos and len(x['direct_triggers']) <= 64
                 assert all(t['relation_id'] in ids for t in x['direct_triggers'])
-                by_id = {r['id']: r for r in relations}
                 assert all(by_id[t['relation_id']]['consumer'] == x['repo'] for t in x['direct_triggers'])
+                assert all(by_id[t['relation_id']]['provider'] == provider for t in x['direct_triggers'])
                 assert all(type(e) is int and 0 <= e < len(relations) for e in x['witness_edges'])
                 chain = [relations[e] for e in x['witness_edges']]
+                assert chain and chain[0]['provider'] == provider
                 assert all(a['consumer'] == b['provider'] for a, b in zip(chain, chain[1:]))
-                if chain:
-                    assert chain[-1]['consumer'] == x['repo']
+                assert chain[-1]['consumer'] == x['repo']
+                assert x['distance'] == len(chain)
     else:
         raise ValueError('feed')
     return d

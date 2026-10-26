@@ -1,0 +1,424 @@
+{
+  "evidence_schema_version": 1,
+  "producer": {
+    "name": "context-engine",
+    "version": "0.1.0",
+    "analysis_compat_version": 1,
+    "identity_version": "evidence-id-v1",
+    "parser_version": null
+  },
+  "subject": {
+    "kind": "repository",
+    "repository_id": "fixture"
+  },
+  "observation": {
+    "basis": "committed_changed_pairs",
+    "scope": "ed4794280a43295a3adb5cc237adc93d9fe1cc2c8c4502abd5efee7480bd6d0a",
+    "atomic": false,
+    "git_head": null,
+    "git_dirty": null,
+    "base": "a481bcc843ecc8589609d1d29edbe38a46fd5d6a",
+    "head": "f6ef76233ddf93b09f324cd44f83dac94e3b80f5"
+  },
+  "coverage": {
+    "complete": false,
+    "counts": {
+      "ambiguous_symbol_keys": 0,
+      "changed_files": 1,
+      "unavailable_relation_comparisons": 0,
+      "unavailable_symbol_comparisons": 0
+    },
+    "limitations": [
+      "changed_pairs_only",
+      "git_rename_heuristic",
+      "no_cross_refactor_lineage"
+    ]
+  },
+  "feed": "changes",
+  "data": {
+    "base": {
+      "repository_ref": "d82f3cbc947ce8e2693c3775bc5ba9915869bfe8d1392f647ab3e888219d1745",
+      "files": [
+        {
+          "id": "277fd76e30205802ce0e55001b40fe9b1fea99976facbe4d5ce1927aaff624bc",
+          "path": "a.py",
+          "language": "Python",
+          "role": "Source",
+          "analysis_status": "analyzed",
+          "syntax_errors": 0,
+          "relation_status": "analyzed",
+          "unsupported_relation_candidates": 0
+        }
+      ],
+      "symbols": [
+        {
+          "id": "74027b22ba9ff88f150fa0f8d5cb4746c427d5f7fd4ce68a82edcaf8785de1f9",
+          "file_ref": "277fd76e30205802ce0e55001b40fe9b1fea99976facbe4d5ce1927aaff624bc",
+          "path": "a.py",
+          "language": "Python",
+          "kind": "function",
+          "name": "a",
+          "qualified_name": "a",
+          "range": {
+            "start": {
+              "byte": 16,
+              "row": 1,
+              "column": 0
+            },
+            "end": {
+              "byte": 32,
+              "row": 2,
+              "column": 7
+            }
+          },
+          "name_range": {
+            "start": {
+              "byte": 20,
+              "row": 1,
+              "column": 4
+            },
+            "end": {
+              "byte": 21,
+              "row": 1,
+              "column": 5
+            }
+          },
+          "derivation": "parser_definition"
+        }
+      ],
+      "relations": [
+        {
+          "id": "afe87e500b26d4f24f740afcf38d52e5bd0a5a71f3e2990bd6be1e576a191d09",
+          "source_ref": "d82f3cbc947ce8e2693c3775bc5ba9915869bfe8d1392f647ab3e888219d1745",
+          "target_ref": "277fd76e30205802ce0e55001b40fe9b1fea99976facbe4d5ce1927aaff624bc",
+          "unresolved_name": null,
+          "kind": "contains",
+          "resolution": "direct_structural",
+          "metadata": {
+            "kind": "none"
+          },
+          "path": "a.py",
+          "range": null,
+          "language": null,
+          "derivation": "repository_contains_file"
+        },
+        {
+          "id": "92e19e45e0f975400a90a480f17fc510e43fbe33ad9aeec235bdd973ff338da8",
+          "source_ref": "277fd76e30205802ce0e55001b40fe9b1fea99976facbe4d5ce1927aaff624bc",
+          "target_ref": null,
+          "unresolved_name": "external",
+          "kind": "imports",
+          "resolution": "unresolved",
+          "metadata": {
+            "kind": "import",
+            "binding": null,
+            "wildcard": false
+          },
+          "path": "a.py",
+          "range": {
+            "start": {
+              "byte": 7,
+              "row": 0,
+              "column": 7
+            },
+            "end": {
+              "byte": 15,
+              "row": 0,
+              "column": 15
+            }
+          },
+          "language": "Python",
+          "derivation": "python_import_syntax"
+        },
+        {
+          "id": "03ac9e2af0f640426986e2a79606684d94030b3bf72313b2115126c1bf99ad1b",
+          "source_ref": "277fd76e30205802ce0e55001b40fe9b1fea99976facbe4d5ce1927aaff624bc",
+          "target_ref": "74027b22ba9ff88f150fa0f8d5cb4746c427d5f7fd4ce68a82edcaf8785de1f9",
+          "unresolved_name": null,
+          "kind": "contains",
+          "resolution": "direct_structural",
+          "metadata": {
+            "kind": "none"
+          },
+          "path": "a.py",
+          "range": {
+            "start": {
+              "byte": 16,
+              "row": 1,
+              "column": 0
+            },
+            "end": {
+              "byte": 32,
+              "row": 2,
+              "column": 7
+            }
+          },
+          "language": "Python",
+          "derivation": "lexical_range_containment"
+        },
+        {
+          "id": "165de73a3530a8dcf3720f16d9c9fbba316d29efa15c7ae5987010d581a5e011",
+          "source_ref": "74027b22ba9ff88f150fa0f8d5cb4746c427d5f7fd4ce68a82edcaf8785de1f9",
+          "target_ref": "74027b22ba9ff88f150fa0f8d5cb4746c427d5f7fd4ce68a82edcaf8785de1f9",
+          "unresolved_name": null,
+          "kind": "references",
+          "resolution": "exact_same_file_qualified_name",
+          "metadata": {
+            "kind": "reference",
+            "context": "call"
+          },
+          "path": "a.py",
+          "range": {
+            "start": {
+              "byte": 29,
+              "row": 2,
+              "column": 4
+            },
+            "end": {
+              "byte": 30,
+              "row": 2,
+              "column": 5
+            }
+          },
+          "language": "Python",
+          "derivation": "python_call_syntax"
+        }
+      ]
+    },
+    "head": {
+      "repository_ref": "1ec48a64ec0f4a5d3ffa98f54f9a704603cb566c0aa8de55141b5c0019b84307",
+      "files": [
+        {
+          "id": "f19fc6e506cb08adf448c696daff488c9bff109036d1fbc133bf5a26204abc04",
+          "path": "a.py",
+          "language": "Python",
+          "role": "Source",
+          "analysis_status": "analyzed",
+          "syntax_errors": 0,
+          "relation_status": "analyzed",
+          "unsupported_relation_candidates": 0
+        }
+      ],
+      "symbols": [
+        {
+          "id": "0f822bb0d1c5d82063efa02b44d2c9d8549d2efa54e2d098d132cabb964ebdfa",
+          "file_ref": "f19fc6e506cb08adf448c696daff488c9bff109036d1fbc133bf5a26204abc04",
+          "path": "a.py",
+          "language": "Python",
+          "kind": "function",
+          "name": "a",
+          "qualified_name": "a",
+          "range": {
+            "start": {
+              "byte": 16,
+              "row": 1,
+              "column": 0
+            },
+            "end": {
+              "byte": 37,
+              "row": 2,
+              "column": 12
+            }
+          },
+          "name_range": {
+            "start": {
+              "byte": 20,
+              "row": 1,
+              "column": 4
+            },
+            "end": {
+              "byte": 21,
+              "row": 1,
+              "column": 5
+            }
+          },
+          "derivation": "parser_definition"
+        }
+      ],
+      "relations": [
+        {
+          "id": "cd65d95761a58409a9f492a5e93e45361c9a840637abf95af53703e123bf8600",
+          "source_ref": "1ec48a64ec0f4a5d3ffa98f54f9a704603cb566c0aa8de55141b5c0019b84307",
+          "target_ref": "f19fc6e506cb08adf448c696daff488c9bff109036d1fbc133bf5a26204abc04",
+          "unresolved_name": null,
+          "kind": "contains",
+          "resolution": "direct_structural",
+          "metadata": {
+            "kind": "none"
+          },
+          "path": "a.py",
+          "range": null,
+          "language": null,
+          "derivation": "repository_contains_file"
+        },
+        {
+          "id": "968885e83b9e1717dbcacac92e6e8bcad5eb8177ea2402378fcf57b31395bf12",
+          "source_ref": "f19fc6e506cb08adf448c696daff488c9bff109036d1fbc133bf5a26204abc04",
+          "target_ref": null,
+          "unresolved_name": "external",
+          "kind": "imports",
+          "resolution": "unresolved",
+          "metadata": {
+            "kind": "import",
+            "binding": null,
+            "wildcard": false
+          },
+          "path": "a.py",
+          "range": {
+            "start": {
+              "byte": 7,
+              "row": 0,
+              "column": 7
+            },
+            "end": {
+              "byte": 15,
+              "row": 0,
+              "column": 15
+            }
+          },
+          "language": "Python",
+          "derivation": "python_import_syntax"
+        },
+        {
+          "id": "f75d6b019a78adafa0bc3f97bdd4718945cb8ef4dba4210f693e189c18f6ad68",
+          "source_ref": "f19fc6e506cb08adf448c696daff488c9bff109036d1fbc133bf5a26204abc04",
+          "target_ref": "0f822bb0d1c5d82063efa02b44d2c9d8549d2efa54e2d098d132cabb964ebdfa",
+          "unresolved_name": null,
+          "kind": "contains",
+          "resolution": "direct_structural",
+          "metadata": {
+            "kind": "none"
+          },
+          "path": "a.py",
+          "range": {
+            "start": {
+              "byte": 16,
+              "row": 1,
+              "column": 0
+            },
+            "end": {
+              "byte": 37,
+              "row": 2,
+              "column": 12
+            }
+          },
+          "language": "Python",
+          "derivation": "lexical_range_containment"
+        }
+      ]
+    },
+    "base_coverage": {
+      "complete": false,
+      "counts": {
+        "analysis_analyzed": 1,
+        "diagnostics_withheld": 0,
+        "files_exported": 1,
+        "files_observed": 1,
+        "relations_analyzed": 1,
+        "relations_exported": 4,
+        "scan_warnings_withheld": 0,
+        "symbols_exported": 1,
+        "syntax_errors": 0,
+        "unresolved_names": 1,
+        "unsupported_relation_candidates": 0
+      },
+      "limitations": [
+        "scanner_exclusions_apply",
+        "syntax_not_compiler_binding",
+        "raw_diagnostics_withheld"
+      ]
+    },
+    "head_coverage": {
+      "complete": false,
+      "counts": {
+        "analysis_analyzed": 1,
+        "diagnostics_withheld": 0,
+        "files_exported": 1,
+        "files_observed": 1,
+        "relations_analyzed": 1,
+        "relations_exported": 3,
+        "scan_warnings_withheld": 0,
+        "symbols_exported": 1,
+        "syntax_errors": 0,
+        "unresolved_names": 1,
+        "unsupported_relation_candidates": 0
+      },
+      "limitations": [
+        "scanner_exclusions_apply",
+        "syntax_not_compiler_binding",
+        "raw_diagnostics_withheld"
+      ]
+    },
+    "files": [
+      {
+        "status": "modified",
+        "similarity": null,
+        "before": {
+          "path": "a.py",
+          "mode": "100644",
+          "object_id": "77e282ca94a5d158819fd61f0ecbecad998cdbca"
+        },
+        "after": {
+          "path": "a.py",
+          "mode": "100644",
+          "object_id": "3c6b4b0eba1b7550f26032a03ca4e7ab79431710"
+        },
+        "symbols": [
+          {
+            "kind": "added",
+            "before_ref": "74027b22ba9ff88f150fa0f8d5cb4746c427d5f7fd4ce68a82edcaf8785de1f9",
+            "after_ref": "0f822bb0d1c5d82063efa02b44d2c9d8549d2efa54e2d098d132cabb964ebdfa"
+          }
+        ],
+        "relations": [
+          {
+            "source": {
+              "state": "resolved",
+              "kind": "function",
+              "name": "a"
+            },
+            "target": {
+              "state": "resolved",
+              "kind": "function",
+              "name": "a"
+            },
+            "kind": "references",
+            "resolution": "exact_same_file_qualified_name",
+            "metadata": {
+              "kind": "reference",
+              "context": "call"
+            },
+            "derivation": "python_call_syntax",
+            "before": {
+              "count": 1,
+              "examples": [
+                {
+                  "start": {
+                    "byte": 29,
+                    "row": 2,
+                    "column": 4
+                  },
+                  "end": {
+                    "byte": 30,
+                    "row": 2,
+                    "column": 5
+                  }
+                }
+              ],
+              "examples_omitted": 0
+            },
+            "after": {
+              "count": 0,
+              "examples": [],
+              "examples_omitted": 0
+            }
+          }
+        ],
+        "ambiguous_keys": 0,
+        "comparison_available": true,
+        "relation_comparison_available": true
+      }
+    ],
+    "scope_prefix": null
+  }
+}

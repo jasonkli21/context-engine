@@ -1,6 +1,6 @@
 # Current state
 
-**Last updated:** 2026-10-24
+**Last updated:** 2026-10-26
 
 **Active phase:** Phase 11 — Context Integrity Evidence Adapter
 
@@ -185,6 +185,19 @@ Evidence: [Phase 5 review-fix report](reports/phase-5-review-fix-report.md),
 [Phase 2 review-fix report](reports/phase-2-review-fix-report.md).
 
 ## Acceptance and verification
+
+- On 2026-10-26 the independent Phase 11 handoff findings RV-01 and RV-02 were
+  addressed in the Python conformance consumer. Change references are now
+  type-checked and bound to their exact before/after file paths, including nested
+  scopes; symbol-delta side shapes, committed observation nulls, candidate sort
+  order, workspace revision coherence and nonempty impact-chain ownership are
+  checked.
+  Four valid and 20 invalid goldens, real Git rename mutations and a multi-hop
+  workspace impact fixture pass. `./scripts/verify.sh` passed locally with 115
+  unit and 103 integration tests. An independent post-fix review found no
+  remaining findings. Windows execution and maintainer acceptance remain
+  pending; all earlier dispositions are unchanged. See the [Phase 11 review-fix
+  report](reports/phase-11-review-fix-report.md).
 
 - The maintainer explicitly authorized Phase 11 from `05b9b10` while Phase 10
   re-review remains pending, requested one commit and prohibited subagents. Both
