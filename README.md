@@ -376,7 +376,7 @@ The default location is `<platform-cache>/context-engine/indexes/<key>.sqlite3`.
 Set `CONTEXT_ENGINE_CACHE_DIR=/absolute/external/path` to override the cache base
 (the database remains under `indexes/`). Paths beneath the analyzed root are
 rejected before creation. The key uses lossless canonical root bytes and the parse
-file limit. Schema v3, analysis compatibility v1 and `freshness-v2` are explicit.
+file limit. Schema v3, analysis compatibility v2 and `freshness-v2` are explicit.
 Schema-v2 stores rebuild automatically.
 Path-derived storage keys and per-file ordinals keep unrelated file rows stable.
 A versioned BLAKE3 digest covers structural rows and per-file input stamps.

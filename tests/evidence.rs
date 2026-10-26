@@ -377,6 +377,7 @@ fn independent_decoder_golden_valid_and_invalid_documents() {
         "changes-current-dirty-observation",
         "change-same-revision-wrong-file-symbol",
         "candidate-sort-order",
+        "task-digest",
     ] {
         assert!(
             !valid(&fs::read(p.join(format!("invalid-{name}.json"))).unwrap()),
@@ -651,4 +652,31 @@ fn incomplete_ambiguous_changes_and_nested_scope_remain_explicit() {
             .unwrap()
             > 0
     );
+}
+
+#[test]
+fn independent_digest_shape_rejections_and_real_producer_acceptance() {
+    let r = Repo::new();
+    r.write("target.py", b"def target(): pass\n");
+    let original = r.ok("candidates", &["--task", "target"]);
+    assert_eq!(original["producer"]["analysis_compat_version"], 2);
+    let digest = original["data"]["task_digest"].as_str().unwrap();
+    assert_eq!(digest.len(), 64);
+    for wrong in [
+        "".into(),
+        "a".repeat(63),
+        "a".repeat(65),
+        "A".repeat(64),
+        "g".repeat(64),
+        format!("{}\n", "a".repeat(64)),
+    ] {
+        let mut altered = original.clone();
+        altered["data"]["task_digest"] = json!(wrong);
+        assert!(!valid(&serde_json::to_vec(&altered).unwrap()));
+    }
+    // The independent stdlib decoder checks shape, not cryptographic derivation.
+    // A different well-formed digest is intentionally not claimed as verified.
+    let mut opaque = original;
+    opaque["data"]["task_digest"] = json!("0".repeat(64));
+    assert!(valid(&serde_json::to_vec(&opaque).unwrap()));
 }

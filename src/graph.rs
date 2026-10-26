@@ -280,9 +280,22 @@ impl RepositoryGraph {
         limit: usize,
     ) -> (&'static str, Vec<EntityId>) {
         // Determine match mode without allocating all Phase 1 matches.
-        let mode = if self.index.symbols.iter().any(|s| s.qualified_name == query) {
+        let in_scope = |s: &&crate::model::Symbol| file.is_none_or(|p| p == s.relative_path);
+        let mode = if self
+            .index
+            .symbols
+            .iter()
+            .filter(in_scope)
+            .any(|s| s.qualified_name == query)
+        {
             "qualified_name"
-        } else if self.index.symbols.iter().any(|s| s.name == query) {
+        } else if self
+            .index
+            .symbols
+            .iter()
+            .filter(in_scope)
+            .any(|s| s.name == query)
+        {
             "local_name"
         } else {
             "none"

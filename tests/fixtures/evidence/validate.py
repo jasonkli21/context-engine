@@ -55,6 +55,11 @@ def check_schema(v, s):
     if isinstance(v, list):
         for val in v:
             check_schema(val, s.get('items', {}))
+    if isinstance(v, str):
+        assert len(v) >= s.get('minLength', 0)
+        assert len(v) <= s.get('maxLength', len(v))
+        if 'pattern' in s:
+            assert re.search(s['pattern'], v)
     if type(v) in (int, float):
         assert v >= s.get('minimum', v)
         assert v <= s.get('maximum', v)
@@ -246,6 +251,7 @@ def validate(raw):
                     for example in occ['examples']:
                         span(example)
     elif feed == 'candidates':
+        ref(data['task_digest'])  # shape only; stdlib has no BLAKE3 implementation
         assert data['ranker_version'] == 'file-ranker-v1'
         assert data['sort_order'] == RANK_SORT_ORDER
         assert data['semantics'] == 'ranked_metadata_not_content_selection'

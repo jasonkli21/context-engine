@@ -1,11 +1,8 @@
 //! Immutable Git-object adapter. No checkout, filters, or repository writes.
 use std::{
     ffi::OsString,
-    io::Read,
     path::{Component, Path, PathBuf},
-    process::{Command, Stdio},
-    thread,
-    time::{Duration, Instant},
+    process::Command,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -77,43 +74,15 @@ fn command(root: &Path) -> Command {
         .env("GIT_NO_LAZY_FETCH", "1");
     c
 }
-fn bounded(mut c: Command, max: usize, operation: &'static str) -> Result<Vec<u8>, Error> {
-    let mut child = c
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .stdin(Stdio::null())
-        .spawn()?;
-    let stdout = child.stdout.take().ok_or(Error::Git(operation))?;
-    let reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let result = stdout
-            .take(max.saturating_add(1) as u64)
-            .read_to_end(&mut bytes);
-        (bytes, result)
-    });
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        if let Some(status) = child.try_wait()? {
-            let (bytes, read) = reader.join().map_err(|_| Error::Git(operation))?;
-            read?;
-            if bytes.len() > max {
-                return Err(Error::Limit(operation));
-            }
-            if !status.success() {
-                return Err(Error::Git(operation));
-            }
-            return Ok(bytes);
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(Error::Io(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "Git operation exceeded 15 seconds",
-            )));
-        }
-        thread::sleep(Duration::from_millis(10));
+fn bounded(c: Command, max: usize, operation: &'static str) -> Result<Vec<u8>, Error> {
+    let output = super::capture(c, max, 1024 * 1024).map_err(|error| match error {
+        super::CaptureError::Limit(_) => Error::Limit(operation),
+        super::CaptureError::Io(error) => Error::Io(error),
+    })?;
+    if !output.status.success() {
+        return Err(Error::Git(operation));
     }
+    Ok(output.stdout)
 }
 fn run(root: &Path, args: &[&str], max: usize, op: &'static str) -> Result<Vec<u8>, Error> {
     let mut c = command(root);
@@ -806,5 +775,56 @@ mod tests {
             bounded(c(), bytes.len() - 1, "test"),
             Err(Error::Limit("test"))
         ));
+    }
+}
+
+#[cfg(test)]
+mod containment_tests {
+    use super::*;
+    #[test]
+    fn oversized_revision_stdout_and_stderr_are_typed_limits() {
+        for stream in ["stdout", "stderr"] {
+            let dir = tempfile::tempdir().unwrap();
+            let start = std::time::Instant::now();
+            let command = super::super::tests::oversized_command(stream, &dir.path().join("pid"));
+            assert!(matches!(
+                bounded(command, 1024, "fixture"),
+                Err(Error::Limit("fixture"))
+            ));
+            assert!(start.elapsed() < std::time::Duration::from_secs(3));
+        }
+    }
+    #[test]
+    fn real_git_tree_overflow_uses_injected_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.name", "Fixture"],
+            vec!["config", "user.email", "fixture@example.invalid"],
+        ] {
+            assert!(command(dir.path()).args(args).status().unwrap().success());
+        }
+        for n in 0..128 {
+            std::fs::write(dir.path().join(format!("file-{n:04}.py")), "pass\n").unwrap();
+        }
+        assert!(
+            command(dir.path())
+                .args(["add", "."])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            command(dir.path())
+                .args(["commit", "-qm", "fixture"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(matches!(
+            run(dir.path(), &["ls-tree", "-r", "HEAD"], 1024, "tree"),
+            Err(Error::Limit("tree"))
+        ));
+        assert!(run(dir.path(), &["ls-tree", "-r", "HEAD"], 64 * 1024, "tree").is_ok());
     }
 }

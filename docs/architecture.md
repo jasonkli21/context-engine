@@ -278,12 +278,22 @@ Use the Rust `ignore` crate for Phase 0 rather than reimplementing ignore semant
 
 Expected default behavior:
 
-- respect `.gitignore` and `.ignore` through the traversal backend;
+- respect `.gitignore` and `.ignore` using the crate's Gitignore matchers built
+  from bounded checked-descriptor reads; disable WalkBuilder ignore ingestion;
+- freeze controls before traversal; nearest-directory patterns win within each
+  control class, `.ignore` precedes `.gitignore`, and nested `.git` boundaries
+  stop inherited Git rules; parent controls retain their existing scope;
 - exclude `.git/`;
 - do not follow file or directory symlinks;
 - fail closed if a `.gitignore` or `.ignore` candidate in the scan tree or a
-  consulted parent directory is a symlink; preflight checks metadata without
-  following directory links before the ignore-aware walk;
+  consulted parent directory is a symlink, nonregular, malformed or changes to
+  an unsafe/unreadable target during ingestion; no later path reopen by the parser;
+- inaccessible child directories are excluded with warnings even if permissions
+  change later. Newly created controls apply on the next non-atomic scan;
+- Unix source/count/control opens anchor from `/` through held directory
+  descriptors with NOFOLLOW at each component. The non-Unix fallback still uses
+  a path reopen after metadata checks: concurrent-swap containment remains an open
+  P1 and must not be advertised as guaranteed;
 - do not consult global Git ignores or `.git/info/exclude`;
 - retain unsupported/unknown files as visible records rather than silently discarding them;
 - treat unreadable individual files as warnings where practical, not whole-scan failures.
@@ -543,7 +553,9 @@ SQLite uses bundled `rusqlite`, foreign keys, a two-second busy timeout, bounded
 record reads and transactional replacement. A complete sibling temporary database
 is committed and synced before atomic replacement; failed writes preserve the
 prior committed artifact. Incompatible/corrupt databases rebuild without migration.
-Schema v3, `INDEX_COMPAT_VERSION=1` and `freshness-v2` are separate contracts.
+Schema v3, `INDEX_COMPAT_VERSION=2` and `freshness-v2` are separate contracts.
+Stabilization invalidates compatibility-v1 caches after checked ignore ingestion;
+the store layout is unchanged and incompatible derivative caches rebuild.
 Schema v2 is an incompatible derivative cache; it rebuilds without migration.
 Stable named JSON records occupy normalized file/symbol/diagnostic/extraction/
 candidate rows; paths are BLOBs with `unix_bytes_v1` or `windows_wide_le_v1`.
@@ -663,8 +675,9 @@ stdio dispatch, metadata validation, cancellation and EOF. A small bounded frami
 transport returns JSON-RPC parse errors for malformed JSON. No legacy initialization
 protocol is advertised. A 16 KiB incoming frame bound and 8 MiB complete tool-result
 bound supplement domain limits. At most 16 requests can retain unsent responses;
-capacity exhaustion/duplicate outstanding IDs close stdio and writes time out after
-ten seconds. Cancellation notifications release their matching request slot. The adapter uses the SDK direct-service entry point with a narrow
+capacity exhaustion returns JSON-RPC invalid-request (-32600) with the rejected
+request ID; duplicate outstanding IDs return -32600 with null ID, preserving the
+original response and slot. Receiving continues; writes time out after ten seconds. Cancellation notifications release their matching request slot. The adapter uses the SDK direct-service entry point with a narrow
 per-request metadata guard, avoiding its dual-era bootstrap behavior. Stdio is client-authorized and has no HTTP token.
 Tool schemas reject extra fields and encode exactly one neighborhood selector;
 runtime validation additionally enforces UTF-8 byte, range and combined-argument
@@ -676,7 +689,9 @@ repository writes or execution tools are exposed.
 
 The snapshot descriptor reports known Git HEAD/dirty state and whether freshness
 was verified, but does not identify a content generation or imply an atomic scan.
-Git subprocesses have a 15-second wall-time bound. Filesystem operations still have
+Git subprocesses have a 15-second wall-time bound. Both adapters use one capture
+owner; stdout/stderr overflow signals cause prompt child kill/reap and both reader
+threads are joined before errors return. Filesystem operations still have
 no hard wall-time guarantee; the HTTP timeout does not abort blocking work, and
 shutdown can wait for it indefinitely.
 

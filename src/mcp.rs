@@ -260,9 +260,29 @@ where
             match serde_json::from_slice(line) {
                 Ok(message) => match &message {
                     ClientJsonRpcMessage::Request(request) => {
-                        let mut pending = self.outstanding.lock().unwrap();
-                        if pending.len() >= 16 || !pending.insert(request.id.clone()) {
-                            return None;
+                        let rejection = {
+                            let mut pending = self.outstanding.lock().unwrap();
+                            if pending.contains(&request.id) {
+                                // Null ID avoids correlating this rejection with the
+                                // admitted original or releasing its response slot.
+                                Some((None, "Duplicate outstanding request ID"))
+                            } else if pending.len() >= 16 {
+                                Some((
+                                    Some(request.id.clone()),
+                                    "Outstanding request limit reached",
+                                ))
+                            } else {
+                                pending.insert(request.id.clone());
+                                None
+                            }
+                        };
+                        if let Some((id, reason)) = rejection {
+                            let error =
+                                JsonRpcError::new(id, ErrorData::invalid_request(reason, None));
+                            if self.send(ServerJsonRpcMessage::Error(error)).await.is_err() {
+                                return None;
+                            }
+                            continue;
                         }
                         return Some(message);
                     }
@@ -342,5 +362,95 @@ impl Service<RoleServer> for Modern {
     }
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
         ServerHandler::supported_protocol_versions(&self.0)
+    }
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use serde_json::{Value, json};
+    // Withhold all sends to make the outstanding count deterministic without
+    // depending on worker/Git latency or SDK response scheduling.
+    #[tokio::test]
+    async fn duplicate_and_capacity_errors_preserve_admitted_work_and_transport() {
+        let (mut client, input) = tokio::io::duplex(32 * 1024);
+        let (output, wire) = tokio::io::duplex(32 * 1024);
+        let mut wire = tokio::io::BufReader::new(wire);
+        let mut transport = StdioTransport::new(input, output);
+        async fn put(client: &mut tokio::io::DuplexStream, value: Value) {
+            client
+                .write_all(format!("{value}\n").as_bytes())
+                .await
+                .unwrap();
+        }
+        for id in 0..16 {
+            put(
+                &mut client,
+                json!({"jsonrpc":"2.0", "id":id, "method":"ping"}),
+            )
+            .await;
+        }
+        // All requests arrive before any response, including duplicate-at-cap.
+        for id in [0, 16, 17] {
+            put(
+                &mut client,
+                json!({"jsonrpc":"2.0", "id":id, "method":"ping"}),
+            )
+            .await;
+        }
+        put(
+            &mut client,
+            json!({"jsonrpc":"2.0", "method":"notifications/cancelled", "params":{"requestId":15}}),
+        )
+        .await;
+        for _ in 0..16 {
+            assert!(matches!(
+                transport.receive().await,
+                Some(ClientJsonRpcMessage::Request(_))
+            ));
+        }
+        assert_eq!(transport.outstanding.lock().unwrap().len(), 16);
+        assert!(matches!(
+            transport.receive().await,
+            Some(ClientJsonRpcMessage::Notification(_))
+        ));
+        for id in [Value::Null, json!(16), json!(17)] {
+            let mut line = String::new();
+            wire.read_line(&mut line).await.unwrap();
+            let error: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(error["id"], id);
+            assert_eq!(error["error"]["code"], -32600);
+        }
+        assert_eq!(transport.outstanding.lock().unwrap().len(), 15);
+        assert!(
+            transport
+                .outstanding
+                .lock()
+                .unwrap()
+                .contains(&RequestId::Number(0))
+        );
+        // An actual admitted response still flushes and releases exactly its slot.
+        transport
+            .send(ServerJsonRpcMessage::Error(JsonRpcError::new(
+                Some(RequestId::Number(0)),
+                ErrorData::invalid_params("fixture", None),
+            )))
+            .await
+            .unwrap();
+        let mut line = String::new();
+        wire.read_line(&mut line).await.unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["id"], 0);
+        assert_eq!(transport.outstanding.lock().unwrap().len(), 14);
+        put(
+            &mut client,
+            json!({"jsonrpc":"2.0", "id":18, "method":"ping"}),
+        )
+        .await;
+        assert!(matches!(
+            transport.receive().await,
+            Some(ClientJsonRpcMessage::Request(_))
+        ));
+        drop(client);
+        assert!(transport.receive().await.is_none());
     }
 }

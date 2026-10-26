@@ -743,3 +743,39 @@ fn head_inventory_reuses_tree_sizes_instead_of_spawning_size_queries_per_file() 
     // inventory already carries trustworthy sizes from `ls-tree -l`.
     assert_eq!(count, 1);
 }
+
+#[test]
+fn committed_scoped_local_lookup_precedes_out_of_scope_qualified_name() {
+    let dir = TempDir::new().unwrap();
+    let r = dir.path();
+    git(r, &["init", "-q"]);
+    git(r, &["config", "user.email", "fixture@example.invalid"]);
+    git(r, &["config", "user.name", "Fixture"]);
+    write(r, "a.py", "class A:\n    def run(self): pass\n");
+    write(r, "b.py", "def run(): pass\n");
+    commit(r, "collision");
+    let (scoped, _) = run(r, "history", "run", &["--file", "a.py"]);
+    assert_eq!(scoped["symbol"]["qualified_name"], "A.run");
+    let (global, _) = run(r, "history", "run", &[]);
+    assert_eq!(global["symbol"]["qualified_name"], "run");
+    ctx()
+        .args(["history", "run"])
+        .arg(r)
+        .args(["--file", "a.py"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("A.run"));
+    write(
+        r,
+        "a.py",
+        "class A:\n    def run(self): pass\nclass B:\n    def run(self): pass\n",
+    );
+    commit(r, "same file ambiguity");
+    ctx()
+        .args(["history", "run"])
+        .arg(r)
+        .args(["--file", "a.py"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("2 matches"));
+}

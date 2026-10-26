@@ -27,60 +27,88 @@ fn run(root: &Path, args: &[&str]) -> std::io::Result<Output> {
     ] {
         command.env_remove(key);
     }
+    capture(command, 16 * 1024 * 1024, 1024 * 1024).map_err(|error| match error {
+        CaptureError::Io(error) => error,
+        CaptureError::Limit(_) => std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+    })
+}
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum CaptureError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error("Git {0} exceeded output limit")]
+    Limit(&'static str),
+}
+// One owner always kills/reaps on early failure and joins BOTH readers. Readers
+// notify immediately at limit+1 rather than blocking the child on a full pipe.
+pub(crate) fn capture(
+    mut command: Command,
+    out_max: usize,
+    err_max: usize,
+) -> Result<Output, CaptureError> {
     command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::null());
     let mut child = command.spawn()?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| std::io::Error::other("Git stdout pipe unavailable"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| std::io::Error::other("Git stderr pipe unavailable"))?;
-    let out_reader = thread::spawn(move || read_capture(stdout, 16 * 1024 * 1024));
-    let err_reader = thread::spawn(move || read_capture(stderr, 1024 * 1024));
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let (signal, stop) = std::sync::mpsc::channel();
+    let out_signal = signal.clone();
+    let out_reader = thread::spawn(move || read_capture(stdout, out_max, out_signal));
+    let err_reader = thread::spawn(move || read_capture(stderr, err_max, signal));
     let deadline = Instant::now() + Duration::from_secs(15);
     let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
+        if stop.try_recv().is_ok() {
+            break Err(std::io::Error::other("Git capture interrupted"));
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Err(error) => break Err(error),
+            Ok(None) => {}
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(std::io::Error::new(
+            break Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "Git operation exceeded 15 seconds",
             ));
         }
         thread::sleep(Duration::from_millis(10));
     };
-    let stdout = out_reader
-        .join()
-        .map_err(|_| std::io::Error::other("Git stdout reader failed"))??;
-    let stderr = err_reader
-        .join()
-        .map_err(|_| std::io::Error::other("Git stderr reader failed"))??;
+    if status.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    // Join before propagating ANY error: no detached readers on timeout/overflow.
+    let stdout = out_reader.join();
+    let stderr = err_reader.join();
+    let stdout = stdout.map_err(|_| std::io::Error::other("Git stdout reader failed"))??;
+    let stderr = stderr.map_err(|_| std::io::Error::other("Git stderr reader failed"))??;
+    if stdout.len() > out_max {
+        return Err(CaptureError::Limit("stdout"));
+    }
+    if stderr.len() > err_max {
+        return Err(CaptureError::Limit("stderr"));
+    }
     Ok(Output {
-        status,
+        status: status?,
         stdout,
         stderr,
     })
 }
-fn read_capture(mut reader: impl std::io::Read, limit: usize) -> std::io::Result<Vec<u8>> {
+fn read_capture(
+    reader: impl Read,
+    limit: usize,
+    signal: std::sync::mpsc::Sender<()>,
+) -> std::io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    reader
-        .by_ref()
+    let result = reader
         .take(limit.saturating_add(1) as u64)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > limit {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Git output exceeded metadata limit",
-        ));
+        .read_to_end(&mut bytes);
+    if result.is_err() || bytes.len() > limit {
+        let _ = signal.send(());
     }
+    result?;
     Ok(bytes)
 }
 fn warning(message: String) -> ScanWarning {
@@ -247,3 +275,75 @@ pub fn probe(root: &Path) -> (Option<GitMetadata>, Vec<ScanWarning>) {
 
 #[path = "git_revision.rs"]
 pub(crate) mod revision;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn capture_child() {
+        let Ok(mode) = std::env::var("CTX_CAPTURE_TEST_STREAM") else {
+            return;
+        };
+        use std::io::Write;
+        std::fs::write(
+            std::env::var_os("CTX_CAPTURE_TEST_PID").unwrap(),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+        let bytes = vec![b'x'; 2 * 1024 * 1024];
+        if mode == "stdout" {
+            let _ = std::io::stdout().write_all(&bytes);
+        } else {
+            let _ = std::io::stderr().write_all(&bytes);
+        }
+        // Force parent containment even when the OS pipe can hold all output.
+        std::thread::sleep(Duration::from_secs(20));
+    }
+    pub(super) fn oversized_command(stream: &str, pid_path: &Path) -> Command {
+        let mut c = Command::new(std::env::current_exe().unwrap());
+        c.args(["--exact", "git::tests::capture_child", "--nocapture"])
+            .env("CTX_CAPTURE_TEST_STREAM", stream)
+            .env("CTX_CAPTURE_TEST_PID", pid_path);
+        c
+    }
+    #[test]
+    fn output_limits_stop_and_reap_both_streams_promptly() {
+        for stream in ["stdout", "stderr"] {
+            let dir = tempfile::tempdir().unwrap();
+            let pid_path = dir.path().join("pid");
+            let start = Instant::now();
+            let error = capture(oversized_command(stream, &pid_path), 1024, 1024).unwrap_err();
+            assert!(
+                matches!(error, CaptureError::Limit(s) if s == stream),
+                "{error}"
+            );
+            assert!(
+                start.elapsed() < Duration::from_secs(3),
+                "{:?}",
+                start.elapsed()
+            );
+            #[cfg(unix)]
+            assert!(
+                !Command::new("kill")
+                    .args(["-0", &std::fs::read_to_string(&pid_path).unwrap()])
+                    .stderr(Stdio::null())
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+    }
+    #[test]
+    fn ordinary_capture_preserves_success_and_nonzero_status() {
+        let mut command = Command::new("git");
+        command.arg("--version");
+        let out = capture(command, 1024, 1024).unwrap();
+        assert!(out.status.success());
+        assert!(out.stdout.starts_with(b"git version "));
+        let mut command = Command::new("git");
+        command.arg("--ctx-invalid-option");
+        let out = capture(command, 1024, 4096).unwrap();
+        assert!(!out.status.success());
+        assert!(!out.stderr.is_empty());
+    }
+}

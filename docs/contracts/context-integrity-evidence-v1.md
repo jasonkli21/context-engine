@@ -49,7 +49,8 @@ keys. `evidence_schema_version` is integer 1. `feed` discriminates the exact
 `data` type: `structure`, `changes`, `candidates` or `workspace`.
 
 `producer` names `context-engine`, its actual Cargo package version,
-`analysis_compat_version: 1`, `identity_version: evidence-id-v1`, and
+`analysis_compat_version: 2` at the stabilization baseline (the schema/decoder
+also accept historical compatibility v1), `identity_version: evidence-id-v1`, and
 `parser_version: null`. There is no runtime parser-version metadata available;
 no grammar version is invented. Actual parser dependencies remain in Cargo.lock.
 `subject` is either `{kind: repository, repository_id}` or
@@ -197,6 +198,11 @@ assertion replaces it.
 The shared Task parser bounds input to 4096 bytes and 64 normalized terms. The
 feed never echoes raw task/terms: task_digest is
 `H(normalized_task, normalized_phrase)` and may permit dictionary inference.
+The schema and independent stdlib decoder require exactly 64 lowercase hex
+characters. The decoder validates shape only: it neither receives the original
+normalized phrase nor recomputes BLAKE3. A well-formed but incorrectly derived
+value therefore passes this check; real producer exports and Rust derivation tests
+provide separate producer evidence, not independent cryptographic verification.
 `data` includes ranker_version file-ranker-v1, its exact sort_order, semantics
 ranked_metadata_not_content_selection, task_digest, fallback, nullable change,
 and candidates. It calls Task::parse and context::rank, never context::select or
@@ -253,7 +259,7 @@ Top coverage adds workspace_gaps; detailed typed gaps/trigger limits remain in d
 | Evidence | 1 | New opt-in namespace |
 | graph/context/diff and existing CLI | schema_version 1 | Unchanged |
 | Workspace | workspace_schema_version 2 / manifest 1 | Unchanged, reused |
-| SQLite / analysis / freshness | 3 / 1 / freshness-v2 | Unchanged |
+| SQLite / analysis / freshness | 3 / 2 / freshness-v2 | Stabilization bumps analysis compatibility for checked ignore ingestion; incompatible caches rebuild |
 | HTTP/MCP vocabulary | Phase 9 | Unchanged, no evidence routes/tools |
 
 Consumers reject unknown evidence major versions and duplicate JSON keys. They

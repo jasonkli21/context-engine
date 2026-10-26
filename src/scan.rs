@@ -2,10 +2,15 @@ use crate::{
     classify::{classify_language, classify_role},
     git,
     model::{FileRecord, RepositoryScan, ScanOptions, ScanWarning},
+    source,
 };
-use ignore::WalkBuilder;
+use ignore::{
+    WalkBuilder,
+    gitignore::{Gitignore, GitignoreBuilder},
+};
 use std::{
-    fs::{self, File},
+    collections::{BTreeMap, BTreeSet},
+    fs,
     io::{self, BufRead, BufReader, Read},
     path::{Path, PathBuf},
 };
@@ -109,6 +114,14 @@ fn scan_with_limits(
     options: &ScanOptions,
     limits: ScanLimits,
 ) -> Result<RepositoryScan, ScanError> {
+    scan_with_open_hook(options, limits, |_| {})
+}
+// The callback is a deterministic test seam at the metadata/open boundary.
+fn scan_with_open_hook(
+    options: &ScanOptions,
+    limits: ScanLimits,
+    before_open: impl Fn(&Path),
+) -> Result<RepositoryScan, ScanError> {
     let root = fs::canonicalize(&options.root).map_err(|source| ScanError::Root {
         path: options.root.clone(),
         source,
@@ -121,7 +134,7 @@ fn scan_with_limits(
         path: root.clone(),
         source,
     })?;
-    reject_symlink_ignore_files(&root, limits)?;
+    let rules = std::sync::Arc::new(checked_ignore_rules(&root, limits, &before_open)?);
     let mut budget = ScanBudget::new(limits);
     let mut scan = RepositoryScan {
         root: root.clone(),
@@ -130,6 +143,16 @@ fn scan_with_limits(
         git: None,
         warnings: vec![],
     };
+    for warning in &rules.warnings {
+        budget.warning(
+            &mut scan.warnings,
+            ScanWarning {
+                path: warning.path.clone(),
+                message: warning.message.clone(),
+            },
+        )?;
+    }
+    let walk_rules = rules.clone();
     let mut builder = WalkBuilder::new(&root);
     builder
         .hidden(false)
@@ -137,11 +160,25 @@ fn scan_with_limits(
         .require_git(false)
         .git_global(false)
         .git_exclude(false)
-        .filter_entry(|entry| entry.depth() == 0 || entry.file_name() != ".git");
+        .ignore(false)
+        .git_ignore(false)
+        .parents(false)
+        .filter_entry(move |entry| {
+            entry.depth() == 0
+                || (entry.file_name() != ".git"
+                    && !walk_rules
+                        .ignored(entry.path(), entry.file_type().is_some_and(|t| t.is_dir())))
+        });
     for result in builder.build() {
         let entry = match result {
             Ok(entry) => entry,
             Err(source) => {
+                if source
+                    .path_in_error()
+                    .is_some_and(|p| rules.blocked.contains(p))
+                {
+                    continue;
+                }
                 if source.depth() == Some(0) {
                     return Err(ScanError::Traversal { path: root, source });
                 }
@@ -228,7 +265,8 @@ fn scan_with_limits(
             if budget.lines > limits.line_bytes {
                 return Err(ScanError::LimitExceeded);
             }
-            match count_lines(entry.path(), metadata.len()) {
+            before_open(entry.path());
+            match count_lines(&root, &relative_path, metadata.len()) {
                 Ok(lines) => Some(lines),
                 Err(error) => {
                     budget.warning(
@@ -288,39 +326,132 @@ impl ErrorPath for ignore::Error {
     }
 }
 
-fn reject_symlink_ignore_files(root: &Path, limits: ScanLimits) -> Result<(), ScanError> {
+// Immutable matchers built from checked descriptors. WalkBuilder's own ignore
+// ingestion MUST remain disabled: a metadata preflight cannot authorize a reopen.
+#[derive(Default)]
+struct IgnoreRules {
+    directories: BTreeMap<PathBuf, DirectoryRules>,
+    blocked: BTreeSet<PathBuf>,
+    warnings: Vec<ScanWarning>,
+}
+struct DirectoryRules {
+    ignore: Gitignore,
+    gitignore: Gitignore,
+    git_boundary: bool,
+}
+impl IgnoreRules {
+    fn ignored(&self, path: &Path, is_dir: bool) -> bool {
+        let mut ignore = ignore::Match::None;
+        let mut gitignore = ignore::Match::None;
+        let mut saw_git = false;
+        for directory in path.parent().into_iter().flat_map(Path::ancestors) {
+            if self.blocked.contains(directory) {
+                return true;
+            }
+            if let Some(rules) = self.directories.get(directory) {
+                if ignore.is_none() {
+                    ignore = rules.ignore.matched(path, is_dir);
+                }
+                if !saw_git && gitignore.is_none() {
+                    gitignore = rules.gitignore.matched(path, is_dir);
+                }
+                saw_git |= rules.git_boundary;
+            }
+        }
+        // .ignore takes precedence over .gitignore, even across directories.
+        ignore.or(gitignore).is_ignore()
+    }
+}
+fn checked_ignore_rules(
+    root: &Path,
+    limits: ScanLimits,
+    before_open: &impl Fn(&Path),
+) -> Result<IgnoreRules, ScanError> {
     let mut budget = ScanBudget::new(limits);
-    fn check_candidate(directory: &Path, budget: &mut ScanBudget) -> Result<(), ScanError> {
-        for name in [".gitignore", ".ignore"] {
+    let mut rules = IgnoreRules::default();
+    fn add_directory(
+        directory: &Path,
+        budget: &mut ScanBudget,
+        rules: &mut IgnoreRules,
+        before_open: &impl Fn(&Path),
+    ) -> Result<(), ScanError> {
+        let mut matchers = Vec::new();
+        for name in [".ignore", ".gitignore"] {
             let path = directory.join(name);
-            match fs::symlink_metadata(&path) {
-                Ok(metadata) if metadata.file_type().is_symlink() => {
+            let fail = |source| ScanError::IgnorePreflight {
+                path: path.clone(),
+                source,
+            };
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(meta) if meta.file_type().is_symlink() => {
                     return Err(ScanError::SymlinkIgnoreFile { path });
                 }
-                Ok(metadata) => {
-                    budget.ignore(metadata.len())?;
+                Ok(meta) => Some(meta),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                Err(e) => return Err(fail(e)),
+            };
+            let mut builder = GitignoreBuilder::new(directory);
+            if let Some(metadata) = &metadata {
+                // Nonregular controls fail closed, including FIFOs/devices.
+                if !metadata.is_file() {
+                    return Err(fail(io::Error::other(
+                        "ignore control is not a regular file",
+                    )));
                 }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(source) => {
-                    return Err(ScanError::IgnorePreflight { path, source });
+                budget.ignore(metadata.len())?;
+                before_open(&path);
+                let file = source::open_checked(directory, Path::new(name), metadata.len())
+                    .map_err(|_| {
+                        fail(io::Error::other(
+                            "ignore control changed or cannot be opened safely",
+                        ))
+                    })?;
+                let mut bytes = Vec::new();
+                file.take(metadata.len().saturating_add(1))
+                    .read_to_end(&mut bytes)
+                    .map_err(fail)?;
+                if bytes.len() as u64 > metadata.len() {
+                    return Err(ScanError::LimitExceeded);
+                }
+                // Same BOM/CRLF and per-line glob grammar as GitignoreBuilder::add.
+                // Invalid controls fail closed instead of silently losing exclusions.
+                let text = std::str::from_utf8(&bytes)
+                    .map_err(|_| fail(io::Error::other("ignore control is not UTF-8")))?;
+                for (i, line) in text.lines().enumerate() {
+                    let line = if i == 0 {
+                        line.trim_start_matches('\u{feff}')
+                    } else {
+                        line
+                    };
+                    builder
+                        .add_line(Some(path.clone()), line)
+                        .map_err(|e| fail(io::Error::other(e)))?;
                 }
             }
+            matchers.push(if metadata.is_some() {
+                builder.build().map_err(|e| fail(io::Error::other(e)))?
+            } else {
+                Gitignore::empty()
+            });
+        }
+        let git_boundary = fs::symlink_metadata(directory.join(".git")).is_ok();
+        if git_boundary || matchers.iter().any(|m| !m.is_empty()) {
+            rules.directories.insert(
+                directory.to_path_buf(),
+                DirectoryRules {
+                    ignore: matchers.remove(0),
+                    gitignore: matchers.remove(0),
+                    git_boundary,
+                },
+            );
         }
         Ok(())
     }
-
-    // WalkBuilder can read parent ignore files, so validate those candidates too.
     for directory in root.ancestors() {
-        if !directory
-            .components()
-            .any(|component| component.as_os_str() == ".git")
-        {
-            check_candidate(directory, &mut budget)?;
+        if !directory.components().any(|c| c.as_os_str() == ".git") {
+            add_directory(directory, &mut budget, &mut rules, before_open)?;
         }
     }
-
-    // Traverse without ignore processing so no ignore control file is opened before
-    // its file type is checked. Symlinked directories are never followed.
     let mut builder = WalkBuilder::new(root);
     builder
         .hidden(false)
@@ -331,20 +462,17 @@ fn reject_symlink_ignore_files(root: &Path, limits: ScanLimits) -> Result<(), Sc
         .git_global(false)
         .git_exclude(false)
         .parents(false)
-        .filter_entry(|entry| entry.depth() == 0 || entry.file_name() != ".git");
+        .filter_entry(|e| e.depth() == 0 || e.file_name() != ".git");
     for result in builder.build() {
         let entry = match result {
             Ok(entry) => entry,
-            // The regular traversal reports recoverable child failures. A directory
-            // that cannot be entered cannot expose an ignore control file to either
-            // traversal, so it is safe to defer its diagnostic.
             Err(error) if error.depth() != Some(0) => {
                 budget.entry(Path::new(""))?;
                 continue;
             }
             Err(source) => {
                 return Err(ScanError::Traversal {
-                    path: root.to_path_buf(),
+                    path: root.into(),
                     source,
                 });
             }
@@ -353,33 +481,36 @@ fn reject_symlink_ignore_files(root: &Path, limits: ScanLimits) -> Result<(), Sc
             continue;
         }
         budget.entry(entry.path().strip_prefix(root).unwrap_or(entry.path()))?;
-        let Some(file_type) = entry.file_type() else {
-            continue;
-        };
-        if file_type.is_file()
-            && matches!(entry.file_name().to_str(), Some(".gitignore" | ".ignore"))
+        if entry.file_type().is_some_and(|t| t.is_dir())
+            && let Err(error) = add_directory(entry.path(), &mut budget, &mut rules, before_open)
         {
-            let metadata = fs::symlink_metadata(entry.path()).map_err(|source| {
-                ScanError::IgnorePreflight {
-                    path: entry.path().into(),
-                    source,
-                }
-            })?;
-            budget.ignore(metadata.len())?;
+            if matches!(&error, ScanError::IgnorePreflight { source, .. } if source.kind() == io::ErrorKind::PermissionDenied)
+            {
+                rules.blocked.insert(entry.path().to_path_buf());
+                budget.warning(
+                    &mut rules.warnings,
+                    ScanWarning {
+                        path: entry.path().strip_prefix(root).ok().map(Path::to_path_buf),
+                        message: "traversal unavailable during ignore snapshot".into(),
+                    },
+                )?;
+            } else {
+                return Err(error);
+            }
         }
-        if file_type.is_symlink()
+        if entry.file_type().is_some_and(|t| t.is_symlink())
             && matches!(entry.file_name().to_str(), Some(".gitignore" | ".ignore"))
         {
             return Err(ScanError::SymlinkIgnoreFile {
-                path: entry.path().to_path_buf(),
+                path: entry.path().into(),
             });
         }
     }
-    Ok(())
+    Ok(rules)
 }
-
-fn count_lines(path: &Path, max_bytes: u64) -> io::Result<u64> {
-    let file = File::open(path)?;
+fn count_lines(root: &Path, relative: &Path, max_bytes: u64) -> io::Result<u64> {
+    let file = source::open_checked(root, relative, max_bytes)
+        .map_err(|_| io::Error::other("file changed or cannot be opened safely"))?;
     count_reader(
         BufReader::new(file.take(max_bytes.saturating_add(1))),
         max_bytes,
@@ -434,6 +565,79 @@ fn count_reader(mut reader: impl BufRead, max_bytes: u64) -> io::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn metadata_to_open_swaps_cannot_read_outside_controls_or_counted_files() {
+        use std::os::unix::fs::symlink;
+        // Each swap is injected after metadata inspection, before the real read.
+        // The sentinel is only created by this fixture; no genuine directory races.
+        for name in ["a.py", ".ignore", ".gitignore", "nested/.ignore"] {
+            let dir = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            let sentinel = outside.path().join("sentinel");
+            fs::write(&sentinel, "x\n").unwrap();
+            fs::create_dir(dir.path().join("nested")).unwrap();
+            fs::write(dir.path().join(name), "\n\n").unwrap();
+            fs::write(dir.path().join("outside.py"), "pass\n").unwrap();
+            let options = ScanOptions {
+                root: dir.path().into(),
+                count_lines: true,
+                max_line_count_file_bytes: 100,
+                probe_git: false,
+            };
+            let swapped = std::cell::Cell::new(false);
+            let scan = scan_with_open_hook(&options, SCAN_LIMITS, |path| {
+                if path.ends_with(name) && !swapped.replace(true) {
+                    fs::remove_file(path).unwrap();
+                    symlink(&sentinel, path).unwrap();
+                }
+            });
+            assert!(swapped.get());
+            if name == "a.py" {
+                let scan = scan.unwrap();
+                assert!(
+                    scan.files
+                        .iter()
+                        .find(|f| f.relative_path == Path::new(name))
+                        .unwrap()
+                        .line_count
+                        .is_none()
+                );
+                assert!(
+                    scan.warnings
+                        .iter()
+                        .any(|w| w.message.contains("line count unavailable"))
+                );
+            } else {
+                assert!(matches!(scan, Err(ScanError::IgnorePreflight { .. })));
+            }
+            assert_eq!(fs::read_to_string(sentinel).unwrap(), "x\n");
+        }
+    }
+    #[test]
+    fn malformed_and_growing_ignore_controls_fail_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = ScanOptions {
+            root: dir.path().into(),
+            count_lines: false,
+            max_line_count_file_bytes: 100,
+            probe_git: false,
+        };
+        fs::write(dir.path().join(".ignore"), [255]).unwrap();
+        assert!(matches!(
+            scan_with_limits(&options, SCAN_LIMITS),
+            Err(ScanError::IgnorePreflight { .. })
+        ));
+        fs::write(dir.path().join(".ignore"), "a").unwrap();
+        assert!(
+            scan_with_open_hook(&options, SCAN_LIMITS, |p| {
+                if p.file_name().is_some_and(|n| n == ".ignore") {
+                    fs::write(p, "growing").unwrap();
+                }
+            })
+            .is_err()
+        );
+    }
     #[test]
     fn discovery_limits_include_directories_paths_and_ignored_preflight_work() {
         let dir = tempfile::tempdir().unwrap();
@@ -592,6 +796,6 @@ mod tests {
             }
         }
         assert!(count_reader(BufReader::new(Broken), 100).is_err());
-        assert!(count_lines(Path::new("/nonexistent/ctx-file.rs"), 100).is_err());
+        assert!(count_lines(Path::new("/nonexistent"), Path::new("ctx-file.rs"), 100).is_err());
     }
 }

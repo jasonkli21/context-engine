@@ -785,3 +785,41 @@ fn aggregate_scan_failure_emits_no_partial_json_for_any_pipeline() {
             ));
     }
 }
+
+#[test]
+fn checked_ignore_snapshot_preserves_bom_anchoring_pruning_and_nested_git_boundaries() {
+    let temp = TempDir::new().unwrap();
+    write(
+        temp.path(),
+        ".gitignore",
+        b"\xef\xbb\xbf*.log\r\n/root-only.py\r\npruned/\r\n!pruned/keep.py\r\n",
+    );
+    write(temp.path(), ".ignore", b"*.secret\n");
+    write(temp.path(), "root-only.py", b"pass\n");
+    write(temp.path(), "sub/root-only.py", b"pass\n");
+    write(temp.path(), "sub/.gitignore", b"!keep.log\n");
+    write(temp.path(), "sub/keep.log", b"visible\n");
+    write(temp.path(), "sub/drop.log", b"hidden\n");
+    write(temp.path(), "pruned/keep.py", b"hidden\n");
+    fs::create_dir_all(temp.path().join("nested/.git")).unwrap();
+    write(temp.path(), "nested/visible.log", b"visible\n");
+    write(temp.path(), "nested/hidden.secret", b"hidden\n");
+    let (v, _) = json(temp.path(), "scan", &[]);
+    let paths: Vec<_> = v["data"]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    for included in ["sub/root-only.py", "sub/keep.log", "nested/visible.log"] {
+        assert!(paths.contains(&included), "{paths:?}");
+    }
+    for excluded in [
+        "root-only.py",
+        "sub/drop.log",
+        "pruned/keep.py",
+        "nested/hidden.secret",
+    ] {
+        assert!(!paths.contains(&excluded), "{paths:?}");
+    }
+}

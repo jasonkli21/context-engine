@@ -224,6 +224,9 @@
           "type": "string"
         },
         "task_digest": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
           "type": "string"
         }
       },
@@ -825,7 +828,11 @@
     "Producer": {
       "properties": {
         "analysis_compat_version": {
-          "const": 1
+          "enum": [
+            1,
+            2
+          ],
+          "type": "integer"
         },
         "identity_version": {
           "const": "evidence-id-v1"

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 // Bump when scanner/classifier, Rust/Python analysis, relation extraction, or
 // persisted enum semantics change. Keep this rule adjacent to the version gate.
-pub const INDEX_COMPAT_VERSION: i64 = 1;
+pub const INDEX_COMPAT_VERSION: i64 = 2;
 pub const FINGERPRINT_VERSION: &str = "freshness-v2";
 const MAX_FRESHNESS_BYTES: u64 = 256 * 1024 * 1024;
 pub struct AnalysisArtifact {
@@ -606,7 +606,8 @@ mod tests {
         load_with(&opts, false, Some(&path), build).unwrap();
         rusqlite::Connection::open(&path)
             .unwrap()
-            .execute("UPDATE meta SET compat=compat+1", [])
+            // A genuine Phase 0–11 cache must rebuild after safe ignore ingestion.
+            .execute("UPDATE meta SET compat=1", [])
             .unwrap();
         let mut builds = 0;
         load_with(&opts, false, Some(&path), |scan| {

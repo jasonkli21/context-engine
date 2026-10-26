@@ -286,12 +286,13 @@ fn run(
             }
         }
         let syms = &snapshot.graph.index.symbols;
-        let mut found: Vec<_> = syms.iter().filter(|s| s.qualified_name == name).collect();
+        let scoped = || {
+            syms.iter()
+                .filter(|s| target.as_ref().is_none_or(|p| s.relative_path == *p))
+        };
+        let mut found: Vec<_> = scoped().filter(|s| s.qualified_name == name).collect();
         if found.is_empty() {
-            found = syms.iter().filter(|s| s.name == name).collect();
-        }
-        if let Some(target) = &target {
-            found.retain(|s| s.relative_path == *target);
+            found = scoped().filter(|s| s.name == name).collect();
         }
         if target.is_none() && result.coverage.head_supported_source_gaps > 0 {
             return Err(format!(

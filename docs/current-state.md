@@ -2,11 +2,23 @@
 
 **Last updated:** 2026-10-26
 
-**Active phase:** Phase 11 — Context Integrity Evidence Adapter
+**Feature baseline:** Phase 11 delivered
 
-**Overall status:** Phase 11 implemented locally; fresh independent review and maintainer acceptance pending
+**Current work:** Post-Phase-11 stabilization; Phase 12 is not authorized
+
+**Overall status:** Stabilization implemented locally; non-Unix read-containment P1 remains open; independent re-review and maintainer acceptance pending
 
 ## Delivered
+
+- Stabilization closes Unix scanner line-count and ignore-control reopen races,
+  scopes graph/history name precedence to the selected file, promptly stops Git
+  output overflow, returns recoverable MCP admission errors, and tightens evidence
+  task-digest conformance. Ignore controls use bounded descriptor reads and frozen
+  matchers; malformed/raced controls fail closed. Analysis compatibility is now v2
+  (SQLite layout remains v3). The non-Unix checked-open fallback still lacks a
+  containment guarantee under concurrent swaps: **open P1**, Windows execution
+  pending. See the [remediation report](reports/stabilization-remediation-report.md)
+  for per-finding dispositions, executable checks and backlog.
 
 - Phase 11 adds JSON-only `evidence structure`, `changes`, `candidates` and
   `workspace` feeds under independent evidence schema v1. Logical repository IDs,
@@ -186,41 +198,20 @@ Evidence: [Phase 5 review-fix report](reports/phase-5-review-fix-report.md),
 
 ## Acceptance and verification
 
-- On 2026-10-26 the independent Phase 11 handoff findings RV-01 and RV-02 were
-  addressed in the Python conformance consumer. Change references are now
-  type-checked and bound to their exact before/after file paths, including nested
-  scopes; symbol-delta side shapes, committed observation nulls, candidate sort
-  order, workspace revision coherence and nonempty impact-chain ownership are
-  checked.
-  Four valid and 20 invalid goldens, real Git rename mutations and a multi-hop
-  workspace impact fixture pass. `./scripts/verify.sh` passed locally with 115
-  unit and 103 integration tests. An independent post-fix review found no
-  remaining findings. Windows execution and maintainer acceptance remain
-  pending; all earlier dispositions are unchanged. See the [Phase 11 review-fix
-  report](reports/phase-11-review-fix-report.md).
+- Stabilization verification on macOS passed the canonical verifier with 124
+  unit / 107 integration tests, all-target/all-feature check and release build.
+  Four valid / 21 invalid evidence goldens and 14 release CLI/Git smokes passed
+  their expected outcomes. Sandbox restrictions required host execution for HTTP
+  and native-filename fixtures. These are local checks, not independent acceptance;
+  the non-Unix P1 remains open. See the [remediation report](reports/stabilization-remediation-report.md).
 
-- The maintainer explicitly authorized Phase 11 from `05b9b10` while Phase 10
-  re-review remains pending, requested one commit and prohibited subagents. Both
-  pre-existing untracked plans were preserved outside the commit. The canonical
-  verifier passed locally with 115 unit / 103 integration tests, including all
-  HTTP/MCP regressions. All-target check, release build and independent decoding
-  of real Rust/Python evidence passed. The existing Python context consumer still
-  rejects qualified matched names; this consumer limitation and successful
-  compatible requests are detailed in the Phase 11 report. This is implementation
-  evidence, not Phase 11 or any earlier phase's independent acceptance.
-
-- On 2026-10-24 the maintainer requested one commit addressing attached Phase 11
-  findings CE11-01 through CE11-03. Native Windows separators now normalize to
-  POSIX wire paths after strict component checks; the independent validator now
-  checks relation endpoint types/path binding, scope format, candidate ranks,
-  change-side references and workspace trigger/witness ownership. README and
-  current-state status distinguish the evidence export from an unintegrated
-  production consumer. Canonical verification passed locally with 115 unit and
-  103 integration tests, including the evidence consumer probes. A Windows-gated
-  path regression was added but could not be executed on this macOS host. Fresh
-  independent Phase 11 re-review and maintainer acceptance remain pending; Phase
-  10 CE10 re-review and earlier dispositions are unchanged. See the [Phase 11
-  review-fix report](reports/phase-11-review-fix-report.md).
+- At baseline `231c025`, the latest Phase 11 review covered the Python
+  conformance semantics (RV-01/RV-02), following CE11-01–03 fixes. That narrow
+  post-fix review reported no remaining findings; it did not confer repo-wide or
+  maintainer acceptance. Prior local verification and consumer limitations remain
+  in the [Phase 11 implementation](reports/phase-11-implementation-report.md) and
+  [review-fix](reports/phase-11-review-fix-report.md) reports. Current stabilization
+  evidence is separate; production Integrity still consumes legacy context/graph.
 
 - The maintainer directly authorized Phase 10 from `39c87cfa` and requested one
   implementation commit, without subagents. The pre-existing untracked Phase 10
@@ -367,7 +358,9 @@ Phase 9 is local, single-root and serialized. Adapter context budgets stop at 1 
 of full-file content; response limits can reject larger evidence sets. HTTP timeouts
 do not kill blocking work. Shutdown waits for that work without a hard deadline.
 MCP is 2026-07-28 only; no legacy or HTTP MCP. Its 16 outstanding-response slots
-are released by matching cancellation notifications; blocking work retains its
+are released by responses or matching cancellation notifications. Capacity requests
+receive an invalid-request error; duplicate outstanding IDs receive an error with
+null ID so the admitted request retains its slot; blocking work retains its
 independent permit until completion. Same-user/token-authorized HTTP clients and stdio clients
 can obtain sensitive repository metadata/source; this is not a multi-user sandbox.
 No third-party MCP client, IPv6, Linux/Windows or external deployment execution is
@@ -431,25 +424,18 @@ filesystem TOCTOU races remain; results are not atomic snapshots.
 
 ## Next step
 
-Fresh independent Phase 11 review of the evidence-v1 contract and consumer,
-reference scoping/integrity, privacy/resource boundaries, actual production
-composition, candidate ranking parity and preserved workspace v2 semantics.
-Maintainer acceptance remains pending; no earlier pending decision is changed.
+1. Resolve or explicitly risk-accept the non-Unix read-containment P1. Re-review
+   the Unix scanner changes and every stabilization regression independently.
+2. Review the executable verification and remaining platform/evaluation gaps in
+   the [remediation report](reports/stabilization-remediation-report.md), then make
+   maintainer acceptance decisions. Production evidence-v1 consumer integration
+   and cross-runtime acceptance remain separate work.
+3. Scope any next phase only after the stabilization gate. Phase 12 is not
+   authorized by this implementation.
 
-
-Fresh independent Phase 10 re-review of the CE10-01–CE10-05 fixes, including the
-workspace JSON v2 evidence and identity contract, committed trigger omissions,
-mixed-time provenance, bounded traversal and production integration. Maintainer
-acceptance remains pending.
-
-Fresh independent Phase 9 re-review of MCP interoperability, HTTP local security,
-blocking/response ownership, cache races, disclosure boundaries and evidence parity.
-The attached findings were addressed in the [Phase 9 review-fix report](reports/phase-9-review-fix-report.md);
-implementation evidence does not constitute Phase 9 acceptance. A strict shutdown
-deadline remains unsupported while Git/filesystem work runs in-process.
-Fresh independent Phase 8 review of immutable history, lineage, scope, bounds and
-production integration. Fresh independent Phase 7 review of incremental storage, freshness, races, watcher
-ownership and integration. Phase 6 fresh re-review remains pending.
-Phase 5 fresh re-review remains required. Phase 4 and Phase 3 fixes still require
-fresh independent re-review; Phase 1/2 final independent dispositions also remain
-pending. Local verification does not constitute independent acceptance.
+Historical acceptance debt is unchanged: Phase 0 was accepted with re-review
+waived; Phases 1–2 final independent dispositions, Phases 3–9 fresh independent
+re-reviews, and Phase 10 fresh re-review/maintainer acceptance remain pending.
+Phase 11's narrow semantic review does not replace formal independent acceptance
+or maintainer disposition. The original implementation/review-fix reports retain
+phase-specific evidence and limitations.

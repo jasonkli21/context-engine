@@ -373,3 +373,33 @@ fn production_root_limit_reports_omissions_in_json_and_human_output() {
             .stdout(predicate::str::contains("roots_truncated: true"));
     }
 }
+
+#[test]
+fn scoped_local_lookup_precedes_out_of_scope_qualified_names() {
+    let dir = TempDir::new().unwrap();
+    write(dir.path(), "a.py", "class A:\n    def run(self): pass\n");
+    write(dir.path(), "b.py", "def run(): pass\n");
+    for command in ["deps", "callers", "related"] {
+        let (scoped, _) = run(dir.path(), command, Some("run"), &["--file", "a.py"]);
+        assert_eq!(scoped["data"]["match_mode"], "local_name");
+        assert_eq!(scoped["data"]["roots"].as_array().unwrap().len(), 1);
+        let (global, _) = run(dir.path(), command, Some("run"), &[]);
+        assert_eq!(global["data"]["match_mode"], "qualified_name");
+        assert_eq!(global["data"]["roots"].as_array().unwrap().len(), 1);
+        ctx()
+            .args([command, "run"])
+            .arg(dir.path())
+            .args(["--file", "a.py"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("A.run"));
+    }
+    write(
+        dir.path(),
+        "a.py",
+        "class A:\n    def run(self): pass\nclass B:\n    def run(self): pass\n",
+    );
+    let (ambiguous, _) = run(dir.path(), "related", Some("run"), &["--file", "a.py"]);
+    assert_eq!(ambiguous["data"]["roots"].as_array().unwrap().len(), 2);
+    assert_eq!(ambiguous["data"]["match_mode"], "local_name");
+}

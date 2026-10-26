@@ -1018,7 +1018,6 @@ mod tests {
                 "identity_version",
                 serde_json::json!("evidence-id-v1"),
             ),
-            ("Producer", "analysis_compat_version", serde_json::json!(1)),
             ("Producer", "parser_version", serde_json::Value::Null),
             ("Observation", "atomic", serde_json::json!(false)),
             ("Coverage", "complete", serde_json::json!(false)),
@@ -1151,6 +1150,10 @@ mod tests {
             }
             schema["$defs"][def]["properties"][field] = serde_json::json!({"enum": values});
         }
+        // Analysis compatibility evolves independently of the evidence wire version.
+        schema["$defs"]["Producer"]["properties"]["analysis_compat_version"] =
+            serde_json::json!({"type":"integer", "enum":[1, 2]});
+        schema["$defs"]["Candidates"]["properties"]["task_digest"] = serde_json::json!({"type":"string", "minLength":64, "maxLength":64, "pattern":"^[0-9a-f]{64}$"});
         let schema = serde_json::to_string_pretty(&schema).unwrap() + "\n";
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
