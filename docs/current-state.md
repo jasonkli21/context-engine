@@ -6,19 +6,22 @@
 
 **Current work:** Post-Phase-11 stabilization; Phase 12 is not authorized
 
-**Overall status:** Stabilization implemented locally; non-Unix read-containment P1 remains open; independent re-review and maintainer acceptance pending
+**Overall status:** Stabilization follow-up implemented locally; non-Unix file reads fail closed pending safe handle-relative support; independent re-review and maintainer acceptance pending
 
 ## Delivered
 
 - Stabilization closes Unix scanner line-count and ignore-control reopen races,
   scopes graph/history name precedence to the selected file, promptly stops Git
   output overflow, returns recoverable MCP admission errors, and tightens evidence
-  task-digest conformance. Ignore controls use bounded descriptor reads and frozen
-  matchers; malformed/raced controls fail closed. Analysis compatibility is now v2
-  (SQLite layout remains v3). The non-Unix checked-open fallback still lacks a
-  containment guarantee under concurrent swaps: **open P1**, Windows execution
-  pending. See the [remediation report](reports/stabilization-remediation-report.md)
-  for per-finding dispositions, executable checks and backlog.
+  task-digest conformance. Follow-up fixes prune ignored trees during bounded
+  control discovery and translate client request IDs to private SDK IDs so late
+  cancelled responses cannot claim a reused wire ID. Non-Unix checked reads now
+  fail closed; content analysis remains unavailable there until handle-relative
+  no-reparse opens are supported. Current cache compatibility is SQLite schema 3,
+  analysis compatibility 2 and `freshness-v2`. The descendant-held Git pipe limit
+  is documented as a direct-child deadline. See the [remediation report](reports/stabilization-remediation-report.md)
+  and [reverification follow-up](reports/post-stabilization-engine-reverification-fix-report.md)
+  for dispositions and verification evidence.
 
 - Phase 11 adds JSON-only `evidence structure`, `changes`, `candidates` and
   `workspace` feeds under independent evidence schema v1. Logical repository IDs,
@@ -30,8 +33,8 @@
   preserves the Phase 10 v2 inspection/optional impact DTO, including typed direct
   triggers and witness omissions. Fully escaped output including LF is capped at
   8 MiB before stdout. Existing CLI schemas, HTTP/MCP vocabulary and cache/index
-  versions remain unchanged. Contract, schema and independent Python consumer
-  fixtures accompany [implementation evidence](reports/phase-11-implementation-report.md).
+  versions remained unchanged at Phase 11 delivery. Contract, schema and
+  independent Python consumer fixtures accompany [implementation evidence](reports/phase-11-implementation-report.md).
 
 - Phase 10 adds invocation-local strict manifest v1 registration, native canonical
   root containment, stable logical repo identities, observed static Cargo root
@@ -60,14 +63,17 @@
   Search/neighborhood skip Git metadata probes to match CLI. Context excludes
   conventional credential filenames and reports the omission count. Adapter
   replies include versioned Git/freshness provenance without claiming atomicity.
-  Git subprocesses are limited to 15 seconds; filesystem stalls can still delay
-  requests and shutdown indefinitely.
+  Git direct children are limited to 15 seconds; inherited pipe holders and
+  filesystem stalls can still delay requests and shutdown beyond that deadline.
 - `ctx mcp` exposes the same five operations over stdio using official rmcp 3.6.0,
   MCP 2026-07-28 only, modern metadata/discovery and no initialize handshake.
   A narrow metadata guard/direct SDK service avoids dual-era bootstrap assumptions.
-  Bounded framing returns malformed-JSON parse errors; cancellation releases
-  matching response slots. Frame/output limits apply; stdout is protocol-only.
-- The existing cache/schema/analysis versions and descriptive boundary are unchanged.
+  Bounded framing returns malformed-JSON parse errors. Wire IDs map to unique
+  internal IDs; cancellation releases a wire slot only before response sending,
+  while an in-flight write retains its slot. Frame/output limits apply; stdout is
+  protocol-only.
+- At Phase 9 delivery, the cache/schema/analysis versions and descriptive boundary
+  were unchanged.
   Phase 9 also repairs inherited Phase 8 compile/test fixture errors discovered by
   executable regression verification. See the [Phase 9 report](reports/phase-9-implementation-report.md)
   for exact scope, SDK interoperability, security/concurrency tests and limitations.
@@ -81,7 +87,7 @@
   event text, retention and output have command-wide bounds; commit-window
   truncation and coverage gaps are explicit. Ambiguous/unavailable lineage stops;
   shallow/grafted histories are rejected. Historical JSON is schema v2; persisted
-  schema, analysis compatibility and freshness versions are unchanged.
+  schema, analysis compatibility and freshness versions were unchanged at Phase 8 delivery.
 - Phase 8 review fixes qualify path-lineage starts without claiming global symbol
   origin, distinguish partial observed symbol totals, expose native path identities,
   fail closed on incomplete supported-source HEAD lookup, report explicit history
@@ -358,8 +364,9 @@ Phase 9 is local, single-root and serialized. Adapter context budgets stop at 1 
 of full-file content; response limits can reject larger evidence sets. HTTP timeouts
 do not kill blocking work. Shutdown waits for that work without a hard deadline.
 MCP is 2026-07-28 only; no legacy or HTTP MCP. Its 16 outstanding-response slots
-are released by responses or matching cancellation notifications. Capacity requests
-receive an invalid-request error; duplicate outstanding IDs receive an error with
+use private per-request IDs and are released by responses or matching cancellation
+  notifications. Capacity requests receive an invalid-request error; duplicate
+  outstanding IDs receive an error with
 null ID so the admitted request retains its slot; blocking work retains its
 independent permit until completion. Same-user/token-authorized HTTP clients and stdio clients
 can obtain sensitive repository metadata/source; this is not a multi-user sandbox.
@@ -424,12 +431,12 @@ filesystem TOCTOU races remain; results are not atomic snapshots.
 
 ## Next step
 
-1. Resolve or explicitly risk-accept the non-Unix read-containment P1. Re-review
-   the Unix scanner changes and every stabilization regression independently.
-2. Review the executable verification and remaining platform/evaluation gaps in
-   the [remediation report](reports/stabilization-remediation-report.md), then make
-   maintainer acceptance decisions. Production evidence-v1 consumer integration
-   and cross-runtime acceptance remain separate work.
+1. Independently review the stabilization follow-up, including the fail-closed
+   non-Unix read decision and remaining Windows execution gap.
+2. Review executable verification and the descendant-pipe limitation in the
+   [reverification follow-up](reports/post-stabilization-engine-reverification-fix-report.md),
+   then make maintainer acceptance decisions. Production evidence-v1 consumer
+   integration and cross-runtime acceptance remain separate work.
 3. Scope any next phase only after the stabilization gate. Phase 12 is not
    authorized by this implementation.
 

@@ -288,12 +288,14 @@ Expected default behavior:
 - fail closed if a `.gitignore` or `.ignore` candidate in the scan tree or a
   consulted parent directory is a symlink, nonregular, malformed or changes to
   an unsafe/unreadable target during ingestion; no later path reopen by the parser;
+- apply loaded ancestor rules during control discovery and prune ignored
+  directories; nested controls beneath ignored directories are not consulted;
 - inaccessible child directories are excluded with warnings even if permissions
   change later. Newly created controls apply on the next non-atomic scan;
 - Unix source/count/control opens anchor from `/` through held directory
-  descriptors with NOFOLLOW at each component. The non-Unix fallback still uses
-  a path reopen after metadata checks: concurrent-swap containment remains an open
-  P1 and must not be advertised as guaranteed;
+  descriptors with NOFOLLOW at each component. Non-Unix checked reads fail closed
+  rather than reopening a path after metadata checks; content analysis remains
+  unavailable there until a handle-relative no-reparse open is implemented;
 - do not consult global Git ignores or `.git/info/exclude`;
 - retain unsupported/unknown files as visible records rather than silently discarding them;
 - treat unreadable individual files as warnings where practical, not whole-scan failures.
@@ -665,9 +667,10 @@ for intelligence routes. Exact bound authority, no Origin, no CORS, no-store,
 JSON/method/size checks and redacted errors delimit the local HTTP boundary.
 Unauthenticated health reports process liveness and whether its worker is ready.
 32 connection slots, 45-second connection lifetimes, 16 body readers, 16 KiB
-requests and 8 MiB responses bound transport work. Git subprocesses have a
-15-second deadline and bounded output; the 30-second query timeout does not kill
-blocking filesystem work. Shutdown stops acceptance, permits five seconds of
+requests and 8 MiB responses bound transport work. Git direct children have a
+15-second deadline and bounded output; inherited pipe holders can keep reader
+threads open beyond it. The 30-second query timeout does not kill blocking
+filesystem work. Shutdown stops acceptance, permits five seconds of
 socket draining and then drains the blocking job without a hard time bound.
 
 `mcp.rs` adapts the same operations using pinned official rmcp 3.6.0, restricted
@@ -677,8 +680,13 @@ protocol is advertised. A 16 KiB incoming frame bound and 8 MiB complete tool-re
 bound supplement domain limits. At most 16 requests can retain unsent responses;
 capacity exhaustion returns JSON-RPC invalid-request (-32600) with the rejected
 request ID; duplicate outstanding IDs return -32600 with null ID, preserving the
-original response and slot. Receiving continues; writes time out after ten seconds. Cancellation notifications release their matching request slot. The adapter uses the SDK direct-service entry point with a narrow
-per-request metadata guard, avoiding its dual-era bootstrap behavior. Stdio is client-authorized and has no HTTP token.
+original response and slot. The transport maps client wire IDs to unique private
+SDK IDs and translates cancellation/responses at the boundary, so a late cancelled
+completion cannot consume a reused wire ID. Cancellation releases a wire slot only
+before response sending; an in-flight write retains it until completion. Receiving
+continues; writes time out after ten seconds. The adapter uses the SDK direct-service
+entry point with a narrow per-request metadata guard, avoiding its dual-era bootstrap
+behavior. Stdio is client-authorized and has no HTTP token.
 Tool schemas reject extra fields and encode exactly one neighborhood selector;
 runtime validation additionally enforces UTF-8 byte, range and combined-argument
 constraints. Conventional credential paths are omitted from full-file context and
@@ -689,10 +697,11 @@ repository writes or execution tools are exposed.
 
 The snapshot descriptor reports known Git HEAD/dirty state and whether freshness
 was verified, but does not identify a content generation or imply an atomic scan.
-Git subprocesses have a 15-second wall-time bound. Both adapters use one capture
-owner; stdout/stderr overflow signals cause prompt child kill/reap and both reader
-threads are joined before errors return. Filesystem operations still have
-no hard wall-time guarantee; the HTTP timeout does not abort blocking work, and
+Git direct children have a 15-second deadline. Both adapters use one capture owner;
+stdout/stderr overflow signals cause prompt child kill/reap and both reader threads
+are joined before errors return. A descendant holding an inherited pipe can delay
+those joins beyond the direct-child deadline. Filesystem operations also have no
+hard wall-time guarantee; the HTTP timeout does not abort blocking work, and
 shutdown can wait for it indefinitely.
 
 ---

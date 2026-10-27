@@ -290,6 +290,16 @@ mod tests {
             std::process::id().to_string(),
         )
         .unwrap();
+        if mode == "descendant-pipe" {
+            // Deliberately leave this short-lived descendant holding the test
+            // pipe after the direct helper exits to expose the join limitation.
+            #[allow(clippy::zombie_processes)]
+            Command::new("sh")
+                .args(["-c", "sleep 0.25"])
+                .spawn()
+                .unwrap();
+            return;
+        }
         let bytes = vec![b'x'; 2 * 1024 * 1024];
         if mode == "stdout" {
             let _ = std::io::stdout().write_all(&bytes);
@@ -305,6 +315,23 @@ mod tests {
             .env("CTX_CAPTURE_TEST_STREAM", stream)
             .env("CTX_CAPTURE_TEST_PID", pid_path);
         c
+    }
+    #[cfg(unix)]
+    #[test]
+    fn capture_waits_for_descendant_holding_pipe_after_direct_child_exits() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("pid");
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "git::tests::capture_child", "--nocapture"])
+            .env("CTX_CAPTURE_TEST_STREAM", "descendant-pipe")
+            .env("CTX_CAPTURE_TEST_PID", &pid_path);
+        let start = Instant::now();
+        let output = capture(command, 16 * 1024, 16 * 1024).unwrap();
+        let elapsed = start.elapsed();
+        assert!(output.status.success());
+        assert!(elapsed >= Duration::from_millis(150), "{elapsed:?}");
+        assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
     }
     #[test]
     fn output_limits_stop_and_reap_both_streams_promptly() {

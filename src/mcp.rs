@@ -9,8 +9,14 @@ use rmcp::{
     service::{NotificationContext, RequestContext, Service},
     transport::Transport,
 };
-use std::{borrow::Cow, future::Future, io, sync::Arc};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    future::Future,
+    io,
+    sync::{Arc, Mutex},
+};
+use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 
 #[derive(Clone)]
 struct Mcp {
@@ -161,7 +167,64 @@ struct StdioTransport<R, W> {
     writer: Arc<tokio::sync::Mutex<W>>,
     line: Vec<u8>,
     discarding: bool,
-    outstanding: Arc<std::sync::Mutex<std::collections::HashSet<RequestId>>>,
+    outstanding: Arc<Mutex<OutstandingRequests>>,
+}
+#[derive(Default)]
+struct OutstandingRequests {
+    by_wire_id: HashMap<RequestId, PendingRequest>,
+    by_internal_id: HashMap<RequestId, RequestId>,
+    next_internal_id: u64,
+}
+struct PendingRequest {
+    internal_id: RequestId,
+    response_sending: bool,
+}
+impl OutstandingRequests {
+    fn admit(&mut self, wire_id: RequestId) -> Option<RequestId> {
+        if self.by_wire_id.contains_key(&wire_id) || self.by_wire_id.len() >= 16 {
+            return None;
+        }
+        // Incoming IDs are always translated, so this private namespace cannot
+        // collide with any client-supplied numeric or string ID.
+        let internal_id = loop {
+            self.next_internal_id = self.next_internal_id.wrapping_add(1);
+            let candidate =
+                RequestId::String(Arc::from(format!("ctx-internal-{}", self.next_internal_id)));
+            if !self.by_internal_id.contains_key(&candidate) {
+                break candidate;
+            }
+        };
+        self.by_internal_id
+            .insert(internal_id.clone(), wire_id.clone());
+        self.by_wire_id.insert(
+            wire_id,
+            PendingRequest {
+                internal_id: internal_id.clone(),
+                response_sending: false,
+            },
+        );
+        Some(internal_id)
+    }
+    fn internal_for_wire(&self, wire_id: &RequestId) -> Option<RequestId> {
+        self.by_wire_id
+            .get(wire_id)
+            .map(|pending| pending.internal_id.clone())
+    }
+    fn release_wire(&mut self, wire_id: &RequestId) {
+        if let Some(pending) = self.by_wire_id.remove(wire_id) {
+            self.by_internal_id.remove(&pending.internal_id);
+        }
+    }
+    fn release_internal(&mut self, internal_id: &RequestId) {
+        if let Some(wire_id) = self.by_internal_id.get(internal_id).cloned()
+            && self
+                .by_wire_id
+                .get(&wire_id)
+                .is_some_and(|pending| pending.internal_id == *internal_id)
+        {
+            self.release_wire(&wire_id);
+        }
+    }
 }
 impl<R: tokio::io::AsyncRead, W> StdioTransport<R, W> {
     fn new(reader: R, writer: W) -> Self {
@@ -170,9 +233,24 @@ impl<R: tokio::io::AsyncRead, W> StdioTransport<R, W> {
             writer: Arc::new(tokio::sync::Mutex::new(writer)),
             line: Vec::new(),
             discarding: false,
-            outstanding: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            outstanding: Arc::new(Mutex::new(OutstandingRequests::default())),
         }
     }
+}
+async fn write_message<W: AsyncWrite + Unpin>(
+    writer: &Arc<tokio::sync::Mutex<W>>,
+    item: &ServerJsonRpcMessage,
+) -> io::Result<()> {
+    let mut bytes = serde_json::to_vec(item).map_err(io::Error::other)?;
+    bytes.push(b'\n');
+    let mut writer = writer.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        writer.write_all(&bytes).await?;
+        writer.flush().await
+    })
+    .await
+    .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))??;
+    Ok(())
 }
 impl<R, W> StdioTransport<R, W>
 where
@@ -224,23 +302,37 @@ where
     ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
         let writer = self.writer.clone();
         let pending = self.outstanding.clone();
-        let id = match &item {
+        let internal_id = match &item {
             ServerJsonRpcMessage::Response(response) => Some(response.id.clone()),
             ServerJsonRpcMessage::Error(error) => error.id.clone(),
             _ => None,
         };
+        let mut item = item;
+        let wire_id = internal_id.as_ref().and_then(|id| {
+            let mut pending = pending.lock().unwrap();
+            let wire_id = pending.by_internal_id.get(id)?.clone();
+            let slot = pending.by_wire_id.get_mut(&wire_id)?;
+            if slot.internal_id != *id {
+                return None;
+            }
+            slot.response_sending = true;
+            Some(wire_id)
+        });
+        let discard_stale_response = internal_id.is_some() && wire_id.is_none();
+        if let Some(wire_id) = &wire_id {
+            match &mut item {
+                ServerJsonRpcMessage::Response(response) => response.id = wire_id.clone(),
+                ServerJsonRpcMessage::Error(error) => error.id = Some(wire_id.clone()),
+                _ => {}
+            }
+        }
         async move {
-            let mut bytes = serde_json::to_vec(&item).map_err(io::Error::other)?;
-            bytes.push(b'\n');
-            let mut writer = writer.lock().await;
-            tokio::time::timeout(std::time::Duration::from_secs(10), async {
-                writer.write_all(&bytes).await?;
-                writer.flush().await
-            })
-            .await
-            .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))??;
-            if let Some(id) = id {
-                pending.lock().unwrap().remove(&id);
+            if discard_stale_response {
+                return Ok(());
+            }
+            write_message(&writer, &item).await?;
+            if let Some(id) = internal_id {
+                pending.lock().unwrap().release_internal(&id);
             }
             Ok(())
         }
@@ -258,40 +350,61 @@ where
                 continue;
             }
             match serde_json::from_slice(line) {
-                Ok(message) => match &message {
+                Ok(mut message) => match &mut message {
                     ClientJsonRpcMessage::Request(request) => {
                         let rejection = {
                             let mut pending = self.outstanding.lock().unwrap();
-                            if pending.contains(&request.id) {
+                            if pending.by_wire_id.contains_key(&request.id) {
                                 // Null ID avoids correlating this rejection with the
                                 // admitted original or releasing its response slot.
                                 Some((None, "Duplicate outstanding request ID"))
-                            } else if pending.len() >= 16 {
+                            } else if pending.by_wire_id.len() >= 16 {
                                 Some((
                                     Some(request.id.clone()),
                                     "Outstanding request limit reached",
                                 ))
                             } else {
-                                pending.insert(request.id.clone());
+                                let wire_id = request.id.clone();
+                                request.id = pending
+                                    .admit(wire_id)
+                                    .expect("capacity and duplicate checks matched admission");
                                 None
                             }
                         };
                         if let Some((id, reason)) = rejection {
                             let error =
                                 JsonRpcError::new(id, ErrorData::invalid_request(reason, None));
-                            if self.send(ServerJsonRpcMessage::Error(error)).await.is_err() {
+                            if write_message(&self.writer, &ServerJsonRpcMessage::Error(error))
+                                .await
+                                .is_err()
+                            {
                                 return None;
                             }
                             continue;
                         }
                         return Some(message);
                     }
-                    ClientJsonRpcMessage::Notification(notification)
+                    ClientJsonRpcMessage::Notification(notification) => {
                         if let ClientNotification::CancelledNotification(cancelled) =
-                            &notification.notification =>
-                    {
-                        if let Some(id) = &cancelled.params.request_id {
-                            self.outstanding.lock().unwrap().remove(id);
+                            &mut notification.notification
+                            && let Some(wire_id) = &cancelled.params.request_id
+                        {
+                            let mut pending = self.outstanding.lock().unwrap();
+                            if let Some(internal_id) = pending.internal_for_wire(wire_id) {
+                                // If send has started, the response owns this ID
+                                // until the write finishes. Otherwise remap the
+                                // cancellation to the SDK's private request ID and
+                                // release the wire ID; the SDK drops any later
+                                // completion for the cancelled private ID.
+                                if !pending
+                                    .by_wire_id
+                                    .get(wire_id)
+                                    .is_some_and(|slot| slot.response_sending)
+                                {
+                                    pending.release_wire(wire_id);
+                                }
+                                cancelled.params.request_id = Some(internal_id);
+                            }
                         }
                         return Some(message);
                     }
@@ -307,7 +420,7 @@ where
                         }
                     };
                     let message = ServerJsonRpcMessage::Error(JsonRpcError::new(None, data));
-                    if self.send(message).await.is_err() {
+                    if write_message(&self.writer, &message).await.is_err() {
                         return None;
                     }
                 }
@@ -383,13 +496,19 @@ mod transport_tests {
                 .await
                 .unwrap();
         }
-        for id in 0..16 {
+        let mut internal_ids = Vec::new();
+        for id in 0..15 {
             put(
                 &mut client,
                 json!({"jsonrpc":"2.0", "id":id, "method":"ping"}),
             )
             .await;
         }
+        put(
+            &mut client,
+            json!({"jsonrpc":"2.0", "id":"fifteen", "method":"ping"}),
+        )
+        .await;
         // All requests arrive before any response, including duplicate-at-cap.
         for id in [0, 16, 17] {
             put(
@@ -400,16 +519,26 @@ mod transport_tests {
         }
         put(
             &mut client,
-            json!({"jsonrpc":"2.0", "method":"notifications/cancelled", "params":{"requestId":15}}),
+            json!({"jsonrpc":"2.0", "method":"notifications/cancelled", "params":{"requestId":999}}),
+        )
+        .await;
+        put(
+            &mut client,
+            json!({"jsonrpc":"2.0", "method":"notifications/cancelled", "params":{"requestId":"fifteen"}}),
         )
         .await;
         for _ in 0..16 {
-            assert!(matches!(
-                transport.receive().await,
-                Some(ClientJsonRpcMessage::Request(_))
-            ));
+            let Some(ClientJsonRpcMessage::Request(request)) = transport.receive().await else {
+                panic!("admitted request expected");
+            };
+            internal_ids.push(request.id);
         }
-        assert_eq!(transport.outstanding.lock().unwrap().len(), 16);
+        assert_eq!(transport.outstanding.lock().unwrap().by_wire_id.len(), 16);
+        assert!(matches!(
+            transport.receive().await,
+            Some(ClientJsonRpcMessage::Notification(_))
+        ));
+        assert_eq!(transport.outstanding.lock().unwrap().by_wire_id.len(), 16);
         assert!(matches!(
             transport.receive().await,
             Some(ClientJsonRpcMessage::Notification(_))
@@ -421,18 +550,11 @@ mod transport_tests {
             assert_eq!(error["id"], id);
             assert_eq!(error["error"]["code"], -32600);
         }
-        assert_eq!(transport.outstanding.lock().unwrap().len(), 15);
-        assert!(
-            transport
-                .outstanding
-                .lock()
-                .unwrap()
-                .contains(&RequestId::Number(0))
-        );
+        assert_eq!(transport.outstanding.lock().unwrap().by_wire_id.len(), 15);
         // An actual admitted response still flushes and releases exactly its slot.
         transport
             .send(ServerJsonRpcMessage::Error(JsonRpcError::new(
-                Some(RequestId::Number(0)),
+                Some(internal_ids[0].clone()),
                 ErrorData::invalid_params("fixture", None),
             )))
             .await
@@ -440,7 +562,7 @@ mod transport_tests {
         let mut line = String::new();
         wire.read_line(&mut line).await.unwrap();
         assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["id"], 0);
-        assert_eq!(transport.outstanding.lock().unwrap().len(), 14);
+        assert_eq!(transport.outstanding.lock().unwrap().by_wire_id.len(), 14);
         put(
             &mut client,
             json!({"jsonrpc":"2.0", "id":18, "method":"ping"}),
@@ -452,5 +574,146 @@ mod transport_tests {
         ));
         drop(client);
         assert!(transport.receive().await.is_none());
+    }
+
+    #[derive(Clone)]
+    struct DelayedService {
+        started: tokio::sync::mpsc::UnboundedSender<(
+            RequestId,
+            tokio::sync::oneshot::Sender<Result<ServerResult, ErrorData>>,
+        )>,
+    }
+    impl Service<RoleServer> for DelayedService {
+        async fn handle_request(
+            &self,
+            _: ClientRequest,
+            context: RequestContext<RoleServer>,
+        ) -> Result<ServerResult, ErrorData> {
+            let (complete, response) = tokio::sync::oneshot::channel();
+            self.started
+                .send((context.id, complete))
+                .expect("test receiver stays open");
+            response
+                .await
+                .unwrap_or_else(|_| Err(ErrorData::internal_error("test response dropped", None)))
+        }
+        async fn handle_notification(
+            &self,
+            _: ClientNotification,
+            _: NotificationContext<RoleServer>,
+        ) -> Result<(), ErrorData> {
+            Ok(())
+        }
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::default())
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_wire_id_reuse_keeps_late_sdk_responses_separate() {
+        let (client, server) = tokio::io::duplex(32 * 1024);
+        let (client_read, mut client_write) = tokio::io::split(client);
+        let (server_read, server_write) = tokio::io::split(server);
+        let transport = StdioTransport::new(server_read, server_write);
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let service = rmcp::service::serve_directly(
+            DelayedService {
+                started: started_tx,
+            },
+            transport,
+            None,
+        );
+        let server_task = tokio::spawn(service.waiting());
+        let mut client_read = tokio::io::BufReader::new(client_read);
+
+        async fn put(writer: &mut (impl AsyncWrite + Unpin), value: Value) {
+            writer
+                .write_all(format!("{value}\n").as_bytes())
+                .await
+                .unwrap();
+        }
+        async fn response<R: tokio::io::AsyncRead + Unpin>(
+            reader: &mut tokio::io::BufReader<R>,
+        ) -> Value {
+            let mut line = String::new();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                reader.read_line(&mut line),
+            )
+            .await
+            .expect("response arrives")
+            .unwrap();
+            serde_json::from_str(&line).unwrap()
+        }
+        fn ping(id: Value) -> Value {
+            json!({
+                "jsonrpc":"2.0",
+                "id":id,
+                "method":"ping",
+                "params":{"_meta":{
+                    "io.modelcontextprotocol/protocolVersion":"2026-07-28",
+                    "io.modelcontextprotocol/clientInfo":{"name":"test","version":"1"},
+                    "io.modelcontextprotocol/clientCapabilities":{}
+                }}
+            })
+        }
+
+        put(&mut client_write, ping(json!(7))).await;
+        let (internal_a, complete_a) = started_rx.recv().await.unwrap();
+        assert_ne!(internal_a, RequestId::Number(7));
+        put(
+            &mut client_write,
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"unknown"}}),
+        )
+        .await;
+        put(
+            &mut client_write,
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}),
+        )
+        .await;
+        put(&mut client_write, ping(json!(7))).await;
+        let (internal_b, complete_b) = started_rx.recv().await.unwrap();
+        assert_ne!(internal_a, internal_b);
+
+        // A distinct string ID with the same display digits remains independent.
+        put(&mut client_write, ping(json!("7"))).await;
+        let (internal_string, complete_string) = started_rx.recv().await.unwrap();
+        assert_ne!(internal_b, internal_string);
+        complete_string.send(Ok(ServerResult::empty(()))).unwrap();
+        assert_eq!(response(&mut client_read).await["id"], "7");
+
+        // The SDK still finishes cancelled work, but it must drop A's old
+        // internal ID instead of consuming B's newly admitted wire ID.
+        complete_a.send(Ok(ServerResult::empty(()))).unwrap();
+        let mut line = String::new();
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                client_read.read_line(&mut line)
+            )
+            .await
+            .is_err()
+        );
+
+        put(&mut client_write, ping(json!(7))).await;
+        let error = response(&mut client_read).await;
+        assert_eq!(error["id"], Value::Null);
+        assert_eq!(error["error"]["code"], -32600);
+        complete_b.send(Ok(ServerResult::empty(()))).unwrap();
+        assert_eq!(response(&mut client_read).await["id"], 7);
+
+        put(&mut client_write, ping(json!(7))).await;
+        let (internal_c, complete_c) = started_rx.recv().await.unwrap();
+        assert_ne!(internal_b, internal_c);
+        complete_c.send(Ok(ServerResult::empty(()))).unwrap();
+        assert_eq!(response(&mut client_read).await["id"], 7);
+
+        drop(client_write);
+        drop(client_read);
+        tokio::time::timeout(std::time::Duration::from_secs(2), server_task)
+            .await
+            .expect("server exits after EOF")
+            .unwrap()
+            .unwrap();
     }
 }

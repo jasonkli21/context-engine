@@ -274,8 +274,9 @@ This query layer introduces no history, semantic ranking or new resolution.
 - Hidden files are included unless ignored. `.git` entries are always excluded.
   Symlinks (both files and directories) and special filesystem entries are skipped.
   A symlinked `.gitignore` or `.ignore` in the scan tree or a consulted parent path
-  fails the scan before ignore-aware traversal. A no-follow metadata preflight checks
-  the tree, including ignored directories, and adds one traversal's metadata cost.
+  fails the scan before inventory traversal when the control is consulted. Control
+  discovery applies already-loaded ancestor rules and prunes ignored directories;
+  nested controls beneath an ignored directory are not consulted.
   Unknown regular files remain visible and contribute to file/byte totals.
 - Directory count includes discovered, non-ignored descendant directories,
   including empty directories; it excludes the scan root. An unreadable discovered
@@ -309,8 +310,11 @@ This query layer introduces no history, semantic ranking or new resolution.
 - Discovery has internal aggregate limits: 50,000 entries (files, directories and
   symlinks), 4 MiB of relative-path bytes per walk, 1,000 warnings / 1 MiB of warning
   details, 1 MiB of consulted ignore-control content, and 256 MiB of line-count I/O.
-  The ignore-free safety preflight has the same entry/path limits, including ignored
-  entries. Exceeding a limit fails the command without a partial inventory.
+  Control discovery and inventory each enforce entry/path bounds over their
+  ignore-aware traversals. Exceeding a limit fails the command without a partial
+  inventory. On non-Unix platforms, checked source/control reads fail closed until
+  a handle-relative no-reparse open is available; scans containing ignore controls
+  can therefore fail and source analysis is unavailable there.
 
 ### Syntax and symbol indexing
 
@@ -664,10 +668,11 @@ does not cancel blocking Git/SQLite/analysis work or release its permit early.
 SIGINT/SIGTERM stops acceptance, allows five seconds for HTTP connections, and
 then waits for the admitted blocking job. That final wait has no hard deadline.
 The core algorithms have resource bounds, but filesystem/Git I/O can still stall.
-Git subprocesses have a 15-second deadline and bounded captured output; filesystem
-operations remain capable of stalling the in-process worker and delaying shutdown.
-If readiness remains busy after a Git timeout, retry after the 15-second command
-deadline. A filesystem stall has no recovery inside the process; terminate and
+Git child processes have a 15-second deadline and bounded captured output. A
+descendant that inherits a pipe can keep a reader thread open beyond that deadline;
+filesystem operations can also stall the in-process worker and delay shutdown. If
+readiness remains busy after a Git child timeout, retry after the child deadline.
+A filesystem stall has no recovery inside the process; terminate and
 restart the service if the repository remains unresponsive. Graceful shutdown
 can wait for that filesystem operation to return.
 `watch` is not launched by either adapter.
@@ -706,11 +711,13 @@ the published tool constraints. Unknown tools and malformed argument shapes are
 protocol errors; semantic argument constraints return `isError: true`. Malformed
 JSON receives a `-32700` parse error; oversized lines are dropped within the frame
 bound, and well-formed invalid frames receive protocol errors. The stdio adapter
-caps outstanding requests at 16 and gives stdout writes ten seconds. Exceeding the
-cap or reusing an outstanding ID closes the transport. Cancellation notifications
-release their matching request slot. EOF closes the adapter and drains the admitted
-job. Cancellation is best effort; an already running blocking computation still
-finishes.
+caps outstanding requests at 16 and gives stdout writes ten seconds. Capacity
+exhaustion returns -32600 with the rejected ID; duplicate outstanding IDs return
+-32600 with a null ID while preserving the admitted request. Client IDs are mapped
+to private SDK IDs, so a late cancelled completion cannot consume a newer request's
+slot. Cancellation releases a wire slot before response sending; an in-flight write
+retains it until completion. EOF closes the adapter and drains the admitted job.
+Cancellation is best effort; an already running blocking computation still finishes.
 
 Both transports expose sensitive source and repository metadata to their trusted
 consumer. Context includes full files. Local same-user processes and the launching

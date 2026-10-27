@@ -134,7 +134,11 @@ fn scan_with_open_hook(
         path: root.clone(),
         source,
     })?;
-    let rules = std::sync::Arc::new(checked_ignore_rules(&root, limits, &before_open)?);
+    let rules = std::sync::Arc::new(std::sync::Mutex::new(checked_ignore_rules(
+        &root,
+        limits,
+        &before_open,
+    )?));
     let mut budget = ScanBudget::new(limits);
     let mut scan = RepositoryScan {
         root: root.clone(),
@@ -143,7 +147,17 @@ fn scan_with_open_hook(
         git: None,
         warnings: vec![],
     };
-    for warning in &rules.warnings {
+    let rule_warnings: Vec<_> = rules
+        .lock()
+        .unwrap()
+        .warnings
+        .iter()
+        .map(|warning| ScanWarning {
+            path: warning.path.clone(),
+            message: warning.message.clone(),
+        })
+        .collect();
+    for warning in &rule_warnings {
         budget.warning(
             &mut scan.warnings,
             ScanWarning {
@@ -167,6 +181,8 @@ fn scan_with_open_hook(
             entry.depth() == 0
                 || (entry.file_name() != ".git"
                     && !walk_rules
+                        .lock()
+                        .unwrap()
                         .ignored(entry.path(), entry.file_type().is_some_and(|t| t.is_dir())))
         });
     for result in builder.build() {
@@ -175,7 +191,7 @@ fn scan_with_open_hook(
             Err(source) => {
                 if source
                     .path_in_error()
-                    .is_some_and(|p| rules.blocked.contains(p))
+                    .is_some_and(|p| rules.lock().unwrap().blocked.contains(p))
                 {
                     continue;
                 }
@@ -290,6 +306,8 @@ fn scan_with_open_hook(
             line_count,
         });
     }
+    drop(builder);
+    drop(rules);
     scan.files
         .sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
     scan.directories.sort();
@@ -452,6 +470,7 @@ fn checked_ignore_rules(
             add_directory(directory, &mut budget, &mut rules, before_open)?;
         }
     }
+    let rules = std::sync::Arc::new(std::sync::Mutex::new(rules));
     let mut builder = WalkBuilder::new(root);
     builder
         .hidden(false)
@@ -462,7 +481,17 @@ fn checked_ignore_rules(
         .git_global(false)
         .git_exclude(false)
         .parents(false)
-        .filter_entry(|e| e.depth() == 0 || e.file_name() != ".git");
+        .filter_entry({
+            let rules = rules.clone();
+            move |entry| {
+                entry.depth() == 0
+                    || (entry.file_name() != ".git"
+                        && !rules.lock().unwrap().ignored(
+                            entry.path(),
+                            entry.file_type().is_some_and(|kind| kind.is_dir()),
+                        ))
+            }
+        });
     for result in builder.build() {
         let entry = match result {
             Ok(entry) => entry,
@@ -481,11 +510,20 @@ fn checked_ignore_rules(
             continue;
         }
         budget.entry(entry.path().strip_prefix(root).unwrap_or(entry.path()))?;
-        if entry.file_type().is_some_and(|t| t.is_dir())
-            && let Err(error) = add_directory(entry.path(), &mut budget, &mut rules, before_open)
-        {
+        let add_result = if entry.file_type().is_some_and(|t| t.is_dir()) {
+            Some(add_directory(
+                entry.path(),
+                &mut budget,
+                &mut rules.lock().unwrap(),
+                before_open,
+            ))
+        } else {
+            None
+        };
+        if let Some(Err(error)) = add_result {
             if matches!(&error, ScanError::IgnorePreflight { source, .. } if source.kind() == io::ErrorKind::PermissionDenied)
             {
+                let mut rules = rules.lock().unwrap();
                 rules.blocked.insert(entry.path().to_path_buf());
                 budget.warning(
                     &mut rules.warnings,
@@ -506,7 +544,11 @@ fn checked_ignore_rules(
             });
         }
     }
-    Ok(rules)
+    drop(builder);
+    match std::sync::Arc::try_unwrap(rules) {
+        Ok(rules) => Ok(rules.into_inner().unwrap()),
+        Err(_) => unreachable!("control discovery walker released its ignore rules"),
+    }
 }
 fn count_lines(root: &Path, relative: &Path, max_bytes: u64) -> io::Result<u64> {
     let file = source::open_checked(root, relative, max_bytes)
@@ -639,7 +681,7 @@ mod tests {
         );
     }
     #[test]
-    fn discovery_limits_include_directories_paths_and_ignored_preflight_work() {
+    fn discovery_budgets_prune_ignored_subtrees_before_loading_nested_controls() {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir(dir.path().join("d")).unwrap();
         fs::write(dir.path().join("d/a.rs"), "fn f() {}\n").unwrap();
@@ -672,7 +714,24 @@ mod tests {
             ));
         }
         fs::write(dir.path().join(".ignore"), "d/\n").unwrap();
-        // Even though ignored discovery would retain only .ignore, preflight must stop.
+        fs::write(dir.path().join("d/.ignore"), [255]).unwrap();
+        let ignored = scan_with_limits(
+            &options,
+            ScanLimits {
+                entries: 2,
+                ..SCAN_LIMITS
+            },
+        )
+        .expect("ignored content and its controls are not consulted");
+        assert_eq!(ignored.files.len(), 1);
+        assert_eq!(ignored.files[0].relative_path, Path::new(".ignore"));
+        assert!(ignored.directories.is_empty());
+
+        fs::remove_file(dir.path().join(".ignore")).unwrap();
+        fs::remove_file(dir.path().join("d/.ignore")).unwrap();
+        for name in ["b.rs", "c.rs"] {
+            fs::write(dir.path().join("d").join(name), "fn f() {}\n").unwrap();
+        }
         assert!(matches!(
             scan_with_limits(
                 &options,

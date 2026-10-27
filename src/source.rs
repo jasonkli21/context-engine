@@ -53,11 +53,19 @@ fn open_checked_with(
     if meta.len() > max {
         return Err(AnalysisStatus::TooLarge);
     }
-    before_open();
-    // Open each component relative to a held directory descriptor: parent swaps
-    // cannot redirect this read through a symlink outside the scan root.
+    #[cfg(not(unix))]
+    {
+        // A metadata check followed by an ordinary path open can follow a
+        // reparse point installed between the two operations. Until this
+        // platform has a handle-relative no-reparse implementation, fail closed.
+        let _ = before_open;
+        Err(AnalysisStatus::ReadFailed)
+    }
     #[cfg(unix)]
-    let file: File = {
+    {
+        before_open();
+        // Open each component relative to a held directory descriptor: parent swaps
+        // cannot redirect this read through a symlink outside the scan root.
         use rustix::fs::{Mode, OFlags, open, openat};
         let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
         // Canonical callers use absolute roots. Anchor from / and reject links in
@@ -83,25 +91,23 @@ fn open_checked_with(
             )
             .map_err(|_| AnalysisStatus::ReadFailed)?;
         }
-        openat(
+        let file: File = openat(
             &dir,
             parts.last().unwrap().as_os_str(),
             flags | OFlags::NONBLOCK,
             Mode::empty(),
         )
         .map_err(|_| AnalysisStatus::ReadFailed)?
-        .into()
-    };
-    #[cfg(not(unix))]
-    let file = File::open(&path).map_err(|_| AnalysisStatus::ReadFailed)?;
-    let opened = file.metadata().map_err(|_| AnalysisStatus::ReadFailed)?;
-    if !opened.is_file() {
-        return Err(AnalysisStatus::ReadFailed);
+        .into();
+        let opened = file.metadata().map_err(|_| AnalysisStatus::ReadFailed)?;
+        if !opened.is_file() {
+            return Err(AnalysisStatus::ReadFailed);
+        }
+        if opened.len() > max {
+            return Err(AnalysisStatus::TooLarge);
+        }
+        Ok(file)
     }
-    if opened.len() > max {
-        return Err(AnalysisStatus::TooLarge);
-    }
-    Ok(file)
 }
 #[cfg(test)]
 fn bounded_utf8(reader: impl Read, max: u64) -> Result<String, AnalysisStatus> {
@@ -193,6 +199,20 @@ mod tests {
                 Err(AnalysisStatus::ReadFailed)
             );
         }
+    }
+    #[cfg(not(unix))]
+    #[test]
+    fn non_unix_checked_reads_fail_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+        assert_eq!(
+            load_raw(
+                &fs::canonicalize(dir.path()).unwrap(),
+                Path::new("a.rs"),
+                100
+            ),
+            Err(AnalysisStatus::ReadFailed)
+        );
     }
 }
 
