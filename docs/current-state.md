@@ -1,12 +1,12 @@
 # Current state
 
-**Last updated:** 2026-10-26
+**Last updated:** 2026-10-28
 
 **Feature baseline:** Phase 11 delivered
 
 **Current work:** Post-Phase-11 stabilization; Phase 12 is not authorized
 
-**Overall status:** Stabilization follow-up implemented locally; non-Unix file reads fail closed pending safe handle-relative support; independent re-review and maintainer acceptance pending
+**Overall status:** Stabilization follow-up implemented locally; non-Unix reads fail closed pending safe handle-relative support; global Git filters can conservatively hide dirty state; independent re-review and maintainer acceptance pending
 
 ## Delivered
 
@@ -21,7 +21,9 @@
   analysis compatibility 2 and `freshness-v2`. The descendant-held Git pipe limit
   is documented as a direct-child deadline. See the [remediation report](reports/stabilization-remediation-report.md)
   and [reverification follow-up](reports/post-stabilization-engine-reverification-fix-report.md)
-  for dispositions and verification evidence.
+  for dispositions and verification evidence. The Oct 28 handoff evaluation
+  records the Windows acceptance proposal and retains the Git filter guard pending
+  a safe way to pin attribute/config state; see the [follow-up evaluation](reports/post-phase-11-follow-up-evaluation.md).
 
 - Phase 11 adds JSON-only `evidence structure`, `changes`, `candidates` and
   `workspace` feeds under independent evidence schema v1. Logical repository IDs,
@@ -210,6 +212,13 @@ Evidence: [Phase 5 review-fix report](reports/phase-5-review-fix-report.md),
   their expected outcomes. Sandbox restrictions required host execution for HTTP
   and native-filename fixtures. These are local checks, not independent acceptance;
   the non-Unix P1 remains open. See the [remediation report](reports/stabilization-remediation-report.md).
+
+- The Oct 28 post-Phase-11 handoff evaluation confirmed that non-Unix source reads
+  fail closed and reproduced `git_dirty: null` for unused global clean/process
+  filters. A static `check-attr` prototype was not retained because separate
+  attribute/config inspection and `git status` cannot pin one state against races.
+  Native Windows reader work and a stronger safe filter-state design remain gated;
+  see the [follow-up evaluation](reports/post-phase-11-follow-up-evaluation.md).
 
 - At baseline `231c025`, the latest Phase 11 review covered the Python
   conformance semantics (RV-01/RV-02), following CE11-01–03 fixes. That narrow
